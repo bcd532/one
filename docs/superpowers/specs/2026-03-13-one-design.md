@@ -495,6 +495,12 @@ ONE: Welcome back. Session 12.
 Single file: `.one/brain.db`
 
 ```sql
+-- Project metadata and schema versioning
+meta (
+  key, value
+)
+-- key: schema_version, project_name, project_root, created_at
+
 -- Knowledge Graph
 nodes (
   id, type, name, description, status, phase_created,
@@ -529,6 +535,7 @@ sessions (
   id, phase, status, focus, started_at, ended_at,
   summary, tokens_used, agents_spawned
 )
+-- status: started, running, interrupted, completed
 
 -- Tasks
 tasks (
@@ -604,7 +611,8 @@ one/
 │   │   ├── brain.ts           # SQLite brain — schema, queries, migrations
 │   │   ├── knowledge.ts       # Knowledge graph — nodes, edges, queries
 │   │   ├── session.ts         # Session lifecycle, crash recovery
-│   │   └── config.ts          # Project configuration
+│   │   ├── config.ts          # Project configuration
+│   │   └── migrations/        # Numbered schema migrations (001_initial.ts, ...)
 │   ├── phases/
 │   │   ├── understand.ts      # Phase 1 — conversation logic, unknown tracking
 │   │   ├── research.ts        # Phase 2 — research agent spawning, report parsing
@@ -646,6 +654,20 @@ one/
 ├── tsconfig.json
 └── LICENSE
 ```
+
+---
+
+## CLI Commands
+
+| Command | Purpose |
+|---|---|
+| `one` | Initialize project, set up Telegram, start background service |
+| `one stop` | Stop the background service and all agents |
+| `one status` | Show project state — progress, topology stats, dangling connections |
+| `one logs` | Tail the current day's structured log with human-readable formatting |
+| `one reset-telegram` | Re-link Telegram bot (new token or chat_id) |
+
+Everything else happens through Telegram.
 
 ---
 
@@ -765,10 +787,19 @@ Project configuration lives in `.one/config.json`:
   "checkpoint_mode": "after_each_task",
   "max_retries_per_task": 3,
   "auto_commit": false,
-  "claude_code_path": "claude",
-  "min_claude_code_version": "1.0.0"
+  "claude_code_path": "claude"
 }
 ```
+
+| Field | Description |
+|---|---|
+| `project_root` | Absolute path to the project directory |
+| `model` | Claude model to use (sonnet, opus, haiku) |
+| `daily_token_budget` | Max tokens (input + output combined) per day. 0 = unlimited. |
+| `checkpoint_mode` | When to pause for review: `after_each_task`, `after_each_milestone`, `never` |
+| `max_retries_per_task` | How many times to retry a failed task before escalating to user |
+| `auto_commit` | Whether One commits to git after each completed task |
+| `claude_code_path` | Path to the Claude Code CLI binary |
 
 The `.one/` directory is auto-added to `.gitignore` on init. It contains:
 - `brain.db` — the SQLite brain
