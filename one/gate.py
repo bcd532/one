@@ -37,6 +37,15 @@ NOISE_TOOL_RESULTS = [
     "command was manually backgrounded",
 ]
 
+# Content that should NEVER be stored — privacy/sensitivity filter
+REDACT_PATTERNS = [
+    re.compile(r'don.?t talk about|do not talk about|don.?t mention|do not mention', re.I),
+    re.compile(r'\bpatent\b|\bconfidential\b|\bproprietary\b|\bnda\b', re.I),
+    re.compile(r'\bresume\b|\bsalary\b|\binterview\b|\bapplied to\b|\bjob application\b', re.I),
+    re.compile(r'\bpassword\b|\bsecret key\b|\bapi.?key\b|\btoken\b.*\beyJ', re.I),
+    re.compile(r'\bssn\b|\bsocial security\b|\bcredit card\b', re.I),
+]
+
 # ── High-value signals ──────────────────────────────────────────────
 
 DECISION_SIGNALS = [
@@ -117,6 +126,10 @@ class AifGate:
             for noise in NOISE_TOOL_RESULTS:
                 if noise in lower:
                     return True
+        # Redact sensitive content — never store
+        for pattern in REDACT_PATTERNS:
+            if pattern.search(stripped):
+                return True
         return False
 
     # ── Content quality ─────────────────────────────────────────────
