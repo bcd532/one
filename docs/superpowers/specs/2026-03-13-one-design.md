@@ -30,6 +30,50 @@ One operates as a four-phase machine. Every project goes through all four phases
 The first three phases are where the real value lives — a perfect spec with a
 mediocre executor beats a bad spec with a perfect executor every time.
 
+### How One conducts conversations (Phases 1, 2, 3)
+
+One uses Claude Code as its LLM for all phases — not a separate API integration.
+For conversational phases, One spawns a single Claude Code agent with a
+phase-specific system prompt:
+
+- **Phase 1 agent:** System prompt includes the knowledge graph state, the list
+  of unknowns, and instructions to ask one clarifying question at a time.
+  One parses the agent's output, updates the knowledge graph, recalculates
+  unknowns, and feeds the updated state back for the next turn.
+- **Phase 3 agent:** System prompt includes the full knowledge graph (with
+  research findings), and instructions to present design sections one at a time
+  for user approval.
+
+One is the orchestrator. Claude Code is the brain. One decides *what* to ask
+and *when* to move on. Claude Code decides *how* to phrase it and *what details*
+to explore within One's directive.
+
+### Phase transitions
+
+Phases are not strictly linear. Here's the state machine:
+
+```
+Phase 1 (Understand) ──▶ Phase 2 (Research) ──▶ Phase 3 (Spec) ──▶ Phase 4 (Build)
+         ▲                       │                      │                  │
+         └───────────────────────┘                      │                  │
+                  (need more context)                   │                  │
+                                        ◀───────────────┘                  │
+                                    (need more research)                   │
+                                        ◀──────────────────────────────────┘
+                                    (unexpected finding during build)
+```
+
+**Transition triggers:**
+- **1→2:** One proposes transition when unknowns list contains only items that
+  require external research (not user input). User confirms via Telegram button.
+- **2→3:** One proposes when research covers all identified unknowns. User reviews
+  findings and confirms. User can say "dig deeper on X" to stay in Phase 2.
+- **3→4:** All spec sections approved by user. Task plan generated and approved.
+- **4→2 (backward):** Agent hits unexpected technical blocker. One auto-pauses,
+  spawns research agent, reports findings to user before resuming.
+- **Any→1 (backward):** User realizes scope needs changing. Says "wait, I want
+  to change the scope" in Telegram. One returns to Phase 1 with existing graph.
+
 ### Phase 1: Understand (Conversation)
 
 You tell One what you want. One asks clarifying questions, one at a time, until it
@@ -127,15 +171,7 @@ is broken, One catches it and sends another agent to fix it.
 
 Telegram bot. All interaction happens here.
 
-The `one` CLI exists but is minimal:
-
-| Command | Purpose |
-|---|---|
-| `one` | Initialize project, set up Telegram bot, start background service |
-| `one stop` | Stop the background service |
-| `one status` | Quick terminal check |
-| `one logs` | Tail agent activity logs |
-
+The `one` CLI exists but is minimal — see CLI Commands section for details.
 Everything else happens through Telegram.
 
 ### Brain Layer
@@ -176,8 +212,21 @@ it's populated with goals, decisions, components. During Phase 4, code nodes
 get added and linked to those same components. A goal with no code path means
 the project isn't done.
 
+**Data model clarification:** The `nodes` and `edges` tables are the unified
+graph. The `files` and `functions` tables are detail tables — each row has a
+`node_id` FK pointing into the `nodes` table. A file IS a node (type=file)
+with additional metadata (hash, size, language) stored in the `files` table.
+Integrity checks query the `nodes`/`edges` tables for graph-level analysis
+(orphans, missing connections) and join to `files`/`functions` for code-level
+detail (unresolved imports, stub functions).
+
 **Topology Engine** — parses the codebase into graph nodes after every change.
-Always current, never stale.
+
+Reparse trigger: after each agent tool call that modifies files (Edit, Write).
+One intercepts agent output, detects file-modifying tool calls, and triggers
+an incremental reparse of only the changed files. Full reparse runs on
+`one init` and on session start if file hashes have drifted. For a 500-file
+TypeScript project, incremental reparse targets <100ms per changed file.
 
 What it parses (language-aware):
 - Files — path, hash, size, language, last modified
@@ -188,12 +237,14 @@ What it parses (language-aware):
 - Config references — env vars, config keys, route definitions
 - Test coverage — which functions have tests, which don't
 
-Multi-language support:
+**v1 ships with TypeScript/JavaScript only.** The parser plugin interface is
+designed for extensibility, but v1 focuses on one language done well:
 - TypeScript/JavaScript (imports, exports, classes, React components)
+
+Future parser plugins (v2+):
 - Python (imports, functions, classes, decorators)
 - Rust (use, mod, pub fn, impl, traits)
 - Go (import, func, interfaces)
-- Extensible — new languages are parser plugins
 
 Integrity checks:
 
@@ -293,7 +344,11 @@ WHAT'S NOT WIRED YET:
 ### Who writes the patterns
 
 - **One** detects error→fix pairs by watching agent output automatically
-- **Agents** can call `record_learning` to explicitly capture discoveries
+- **Agents** can record learnings via a convention: the agent's system prompt
+  instructs it to output a specific JSON block (`{"type": "learning", ...}`)
+  when it discovers something important. One's watcher parses these from the
+  stream-json output and stores them as pattern nodes. No MCP server needed —
+  it's a structured output convention within the existing stream.
 - **The user** can add patterns via Telegram: "remember: postgres is on port 5433"
 
 ---
@@ -322,8 +377,14 @@ One feeds tasks sequentially. After each task:
 3. Clean → next task
 4. Dangling → agent fixes before moving on
 
-### Multi-agent mode
+### Multi-agent mode (v2)
 
+Multi-agent is a v2 feature. The orchestrator interface is designed to support
+it, but v1 ships with single-agent execution only. The concurrency machinery
+(file locking, collision prevention, cross-agent wiring checks) adds significant
+complexity that should be built after single-agent mode is proven.
+
+**v2 design (for reference):**
 One identifies independent branches in the task graph and runs in parallel:
 - Agent 1: Database → Auth → Auth tests
 - Agent 2: API scaffold → User endpoints → User tests
@@ -331,11 +392,11 @@ One identifies independent branches in the task graph and runs in parallel:
 
 All agents share brain.db.
 
-**Collision prevention:**
-- Topology tracks which files each agent is working on
-- If two agents need the same file, One serializes — one waits
-- Independent files run in parallel
-- After both finish, One checks cross-agent wiring
+**Collision prevention (v2):**
+- File-level advisory locks tracked in brain.db (agent_id, file_path, locked_at)
+- Integrity checks deferred until an agent completes its full task, not after each edit
+- Files marked "in-flight" are excluded from integrity scans until owning agent finishes
+- After all parallel agents finish, One runs a cross-agent wiring check
 
 ### Agent failure handling
 
@@ -521,7 +582,7 @@ telegram_messages (
 | Core service | TypeScript (Node.js) | Fast to build, strong async, good library ecosystem |
 | Database | SQLite (better-sqlite3) | Single file brain, no server, travels with repo |
 | Telegram | grammy or telegraf | Mature Telegram bot frameworks for Node |
-| Claude Code | CLI child process | `claude -p --output-format stream-json` |
+| Claude Code | CLI child process | `claude -p --output-format stream-json --input-format stream-json` |
 | Topology parsing | Tree-sitter | Battle-tested multi-language parser, native bindings |
 | Process management | Node child_process | Spawn and manage Claude Code processes |
 | Background service | systemd / launchd / pm2 | Keep One running when terminal closes |
@@ -552,10 +613,7 @@ one/
 │   ├── topology/
 │   │   ├── engine.ts          # Topology engine — parse, diff, verify
 │   │   ├── parsers/
-│   │   │   ├── typescript.ts  # TS/JS parser (tree-sitter)
-│   │   │   ├── python.ts      # Python parser
-│   │   │   ├── rust.ts        # Rust parser
-│   │   │   └── go.ts          # Go parser
+│   │   │   └── typescript.ts  # TS/JS parser (tree-sitter) — v1 only language
 │   │   ├── integrity.ts       # Integrity checks — dangling, orphans, stubs
 │   │   └── differ.ts          # Change detection between parses
 │   ├── agents/
@@ -573,6 +631,13 @@ one/
 │   └── cli/
 │       └── index.ts           # Minimal CLI — init, stop, status, logs
 ├── tests/
+│   ├── topology/              # Parser unit tests with fixture files
+│   ├── knowledge/             # Knowledge graph CRUD and query tests
+│   ├── intelligence/          # Pattern extraction and briefing tests
+│   ├── agents/                # Orchestrator integration tests (mock CLI)
+│   ├── telegram/              # Bot integration tests (mock API)
+│   ├── e2e/                   # End-to-end smoke tests
+│   └── fixtures/              # Sample files, recorded streams, schemas
 ├── docs/
 │   └── superpowers/
 │       └── specs/
@@ -584,16 +649,265 @@ one/
 
 ---
 
-## CLI Commands
+## Crash Recovery
 
-| Command | Purpose |
-|---|---|
-| `one` | Initialize project, set up Telegram, start background service |
-| `one stop` | Stop the background service |
-| `one status` | Quick terminal check — project state, progress, dangling connections |
-| `one logs` | Tail agent activity logs |
+One is a long-running background service managing child processes. It must
+handle crashes gracefully.
 
-Everything else happens through Telegram.
+**SQLite:** WAL mode enabled on database open. All writes are atomic transactions.
+If One crashes mid-write, SQLite recovers automatically on next open.
+
+**Session state machine:** `started → running → interrupted → completed`
+If One starts and finds a session in `running` state, it was interrupted.
+Recovery steps:
+1. Check for orphaned Claude Code processes (stored PIDs in `agents` table).
+   Kill any that are still alive.
+2. Mark interrupted session as `interrupted` with timestamp.
+3. Run full topology reparse to determine actual codebase state.
+4. Diff topology against last known good state to detect partial work.
+5. Start new session. Send Telegram message: "Recovered from interruption.
+   Session N was interrupted. Topology shows X files changed, Y integrity
+   issues. Resuming from task Z."
+
+**Agent PID tracking:** Every spawned Claude Code process has its PID stored
+in `agents` table. On startup, One iterates all agents with status `running`,
+checks if PID is alive, and kills/reaps as needed.
+
+**Checkpoint frequency:** During Phase 4, One commits a checkpoint to brain.db
+after every completed task (not after every edit). The checkpoint records:
+current task progress, topology snapshot hash, and agent state. Recovery
+resumes from the last completed task.
+
+---
+
+## Security
+
+**Threat model:** One runs on a single developer's local machine. The Telegram
+bot is the only network-facing surface. The machine and network are assumed
+trusted. This is not a multi-tenant system.
+
+**Telegram authorization:**
+- On first contact, One records the `chat_id` in `telegram_config`.
+- All subsequent messages are checked against this `chat_id`. Messages from
+  any other sender are silently dropped.
+- If the `chat_id` needs to change, the developer runs `one reset-telegram`
+  from the CLI (requires local access).
+
+**Bot token storage:** Stored in plaintext in `.one/brain.db`. This is
+acceptable for a local-only tool — the database file has the same access
+permissions as the developer's other files. The `.one/` directory should be
+added to `.gitignore` (One does this automatically on init).
+
+**Agent sandboxing:** Claude Code agents inherit the developer's permissions.
+One does not add additional sandboxing beyond what Claude Code provides.
+The developer is responsible for their system's security posture.
+
+---
+
+## Cost Controls
+
+One spawns Claude Code agents that consume API tokens. Uncontrolled autonomous
+execution is a real spending risk.
+
+**Budget system:**
+- On first run, One asks via Telegram: "Set a daily token budget? (recommended)"
+- Budget stored in `.one/config.json` as `daily_token_budget`
+- Default: no limit, but One warns if no budget is set before entering Phase 4
+
+**Tracking:**
+- Every agent's token usage is tracked in the `agents` table (`tokens_used`)
+- One aggregates daily usage from all agents
+
+**Guardrails:**
+- At 80% of daily budget: Telegram notification — "You've used 80% of today's
+  budget. N tokens remaining."
+- At 100%: Hard stop. All agents paused. Telegram: "Daily budget reached.
+  [Continue anyway] [Stop for today] [Increase budget]"
+- Per-task estimate: Before Phase 4, One estimates token cost based on task
+  count and complexity. Shown to user for approval.
+
+---
+
+## Installation & Prerequisites
+
+**Prerequisites:**
+- Node.js >= 20
+- Claude Code CLI installed and authenticated (`claude --version` works)
+- Telegram account (for bot setup)
+
+**Installation:**
+```
+npm install -g @anthropic/one
+```
+
+Tree-sitter has native bindings requiring node-gyp. One uses prebuilt binaries
+via `tree-sitter-typescript` npm packages where available, falling back to
+compilation. Installation docs will list platform-specific notes.
+
+**Background service:**
+One uses pm2 as the universal process manager (cross-platform: Linux, macOS,
+Windows WSL). On `one` init:
+1. Checks if pm2 is installed, installs it globally if not
+2. Starts One as a pm2 process: `pm2 start one-service --name one`
+3. Configures pm2 startup hook so One survives reboots
+
+---
+
+## Configuration
+
+Project configuration lives in `.one/config.json`:
+
+```json
+{
+  "project_root": "/path/to/project",
+  "model": "sonnet",
+  "daily_token_budget": 500000,
+  "checkpoint_mode": "after_each_task",
+  "max_retries_per_task": 3,
+  "auto_commit": false,
+  "claude_code_path": "claude",
+  "min_claude_code_version": "1.0.0"
+}
+```
+
+The `.one/` directory is auto-added to `.gitignore` on init. It contains:
+- `brain.db` — the SQLite brain
+- `config.json` — project settings
+- `logs/` — structured log files
+
+Global settings (shared across projects) live in `~/.one/global.json`:
+- Default model
+- Default budget
+- Telegram bot token (if reusing across projects)
+
+---
+
+## Existing Project Support
+
+Running `one` in a directory with existing code triggers a different flow:
+
+```
+$ cd existing-project/
+$ one
+
+ONE: I see an existing project here. Let me understand it first.
+     [Scanning 247 files...]
+     [Building topology graph...]
+
+ONE: Here's what I found:
+     • 247 files, primarily TypeScript
+     • 12 entry points detected
+     • 34 dangling imports (!)
+     • Test coverage: 62%
+
+     What do you want to do?
+     [Add a feature] [Fix something] [Refactor] [Just explore]
+```
+
+One parses the existing codebase into the topology graph first, then enters
+Phase 1 with the context of "you have X, what do you want to change/add?"
+The knowledge graph starts pre-populated with File and Function nodes from
+the existing code.
+
+---
+
+## Database Migrations
+
+The brain.db schema will evolve. Migration strategy:
+
+- `meta` table stores `schema_version` (integer, starts at 1)
+- Migration files live in `src/core/migrations/` as numbered TypeScript files:
+  `001_initial.ts`, `002_add_cost_tracking.ts`, etc.
+- On startup, One reads `schema_version`, runs any migrations with a higher
+  number, updates `schema_version`
+- Migrations run inside a transaction — if one fails, the DB rolls back
+- brain.db is user data that must survive upgrades
+
+---
+
+## Logging & Observability
+
+**Log location:** `.one/logs/`
+
+**Format:** Structured JSON, one object per line (JSONL):
+```json
+{"ts": "2026-03-13T14:30:00Z", "level": "info", "component": "orchestrator", "event": "task_started", "task_id": 4, "agent_id": "a1"}
+```
+
+**Levels:**
+- `info` — phase transitions, task start/complete, session events
+- `debug` — agent tool calls, topology changes, knowledge graph updates
+- `error` — agent failures, recovery actions, integrity violations
+
+**Rotation:** Daily rotation. Logs older than 7 days auto-deleted. Configurable
+in `.one/config.json`.
+
+**`one logs` command:** Tails the current day's log file with human-readable
+formatting (timestamps, colored levels, component names).
+
+---
+
+## Claude Code Compatibility
+
+One depends on Claude Code CLI flags:
+- `--print` (`-p`) for non-interactive mode
+- `--output-format stream-json` for structured output parsing
+- `--input-format stream-json` for structured input
+- `--system-prompt` for agent briefing injection
+
+**On startup:** One runs `claude --version` and checks against a minimum
+supported version stored in `src/core/constants.ts`. If below minimum,
+One warns: "Claude Code vX.Y detected. One requires vX.Z+. Some features
+may not work." Does not hard-block — the developer may know what they're doing.
+
+---
+
+## Testing Strategy
+
+**Framework:** Vitest (fast, native TypeScript, good mocking support).
+
+**Test structure:**
+
+| Area | Test type | What it covers |
+|---|---|---|
+| Topology parsers | Unit | Parse fixture files, verify extracted nodes/edges. One fixture per language feature (imports, exports, classes, functions). |
+| Knowledge graph | Unit | Node/edge CRUD, graph queries (orphans, paths, clusters), edge cases (circular deps). |
+| Integrity checker | Unit | Feed known-broken topologies, verify correct violation detection. |
+| Session tracker | Integration | Session lifecycle, crash recovery simulation, orphan detection. |
+| Error intelligence | Unit | Pattern extraction from mock agent output, briefing generation. |
+| Planner | Unit | Spec→task decomposition, dependency ordering, cycle detection. |
+| Agent orchestrator | Integration | Mock Claude Code CLI (spawn process that emits fixture stream-json), verify task flow, failure handling. |
+| Telegram bot | Integration | Mock Telegram API, verify message formatting, button handling, phase routing. |
+| Brain (SQLite) | Integration | Schema creation, migrations, concurrent access, WAL recovery. |
+| End-to-end | E2E | Tiny project: init → understand (mock user) → research (mock web) → spec → build (mock agent) → verify topology. Uses mock Telegram bot. |
+
+**Test fixtures:**
+- `tests/fixtures/topology/` — sample TypeScript files with known structures
+- `tests/fixtures/stream-json/` — recorded Claude Code output for replay
+- `tests/fixtures/schemas/` — known-good and known-broken topology states
+
+**CI:** Tests run on push. No merge without green tests.
+
+---
+
+## v1 Scope Summary
+
+What ships in v1:
+- Telegram interface (full)
+- Four-phase lifecycle (full)
+- Knowledge graph (full)
+- Topology engine (TypeScript/JavaScript only)
+- Single-agent execution
+- Error intelligence (full)
+- Crash recovery
+- Cost controls
+- Existing project support
+
+What's deferred to v2+:
+- Multi-agent parallel execution
+- Python/Rust/Go parsers
+- Web dashboard
+- Team collaboration features
 
 ---
 
