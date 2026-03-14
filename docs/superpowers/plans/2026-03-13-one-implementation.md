@@ -10,6 +10,11 @@
 
 **Spec:** `docs/superpowers/specs/2026-03-13-one-design.md`
 
+**Dependency notes:**
+- Planner (Task 14) must be built before Orchestrator (Task 15) — orchestrator consumes task graph
+- Phase Handlers (Task 22) are built after Phase logic (Tasks 23-26) — handlers delegate to phases
+- Cost Controls (Task 17) must exist before Phase 4 Build (Task 26)
+
 ---
 
 ## Chunk 1: Project Scaffolding & SQLite Brain
@@ -1598,9 +1603,14 @@ git commit -m "feat: Claude Code process manager — spawn, stream-json parse, l
 
 **Files:**
 - Create: `src/agents/watcher.ts`
+- Create: `tests/fixtures/stream-json/sample-session.jsonl` (fixture with tool calls, errors, learnings)
 - Test: `tests/agents/watcher.test.ts`
 
-- [ ] **Step 1: Write failing tests**
+- [ ] **Step 1: Create stream-json fixture**
+
+Write a sample JSONL file representing a Claude Code session with: text output, Edit tool calls, an error + retry + success sequence, and a learning block.
+
+- [ ] **Step 2: Write failing tests**
 
 Using fixture stream-json data, verify:
 - Detects file-modifying tool calls (Edit, Write)
@@ -1665,7 +1675,38 @@ git commit -m "feat: error intelligence — pattern storage, confidence tracking
 
 ---
 
-### Task 14: Agent Orchestrator — Task Execution Flow
+### Task 14: Planner — Spec to Task Graph
+
+**Files:**
+- Create: `src/intelligence/planner.ts`
+- Test: `tests/intelligence/planner.test.ts`
+
+- [ ] **Step 1: Write failing tests**
+
+Test:
+- Creates tasks from a list of components in the knowledge graph
+- Sets up blocked_by relationships based on component dependencies
+- Returns topologically sorted execution order
+- Detects cycles and errors
+
+- [ ] **Step 2: Run → FAIL**
+
+- [ ] **Step 3: Implement planner.ts**
+
+Reads component and dependency nodes from knowledge graph. For each component, creates a task. For each `depends_on` edge, sets `blocked_by`. Topological sort for execution order (Kahn's algorithm). Stores tasks in `tasks` table.
+
+- [ ] **Step 4: Run → PASS**
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/intelligence/planner.ts tests/intelligence/planner.test.ts
+git commit -m "feat: planner — knowledge graph to task graph with dependency ordering"
+```
+
+---
+
+### Task 15: Agent Orchestrator — Task Execution Flow
 
 **Files:**
 - Create: `src/agents/orchestrator.ts`
@@ -1700,38 +1741,7 @@ git commit -m "feat: agent orchestrator — sequential task execution, verificat
 
 ---
 
-## Chunk 5: Planner & Automation
-
-### Task 15: Planner — Spec to Task Graph
-
-**Files:**
-- Create: `src/intelligence/planner.ts`
-- Test: `tests/intelligence/planner.test.ts`
-
-- [ ] **Step 1: Write failing tests**
-
-Test:
-- Creates tasks from a list of components in the knowledge graph
-- Sets up blocked_by relationships based on component dependencies
-- Returns topologically sorted execution order
-- Detects cycles and errors
-
-- [ ] **Step 2: Run → FAIL**
-
-- [ ] **Step 3: Implement planner.ts**
-
-Reads component and dependency nodes from knowledge graph. For each component, creates a task. For each `depends_on` edge, sets `blocked_by`. Topological sort for execution order (Kahn's algorithm). Stores tasks in `tasks` table.
-
-- [ ] **Step 4: Run → PASS**
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/intelligence/planner.ts tests/intelligence/planner.test.ts
-git commit -m "feat: planner — knowledge graph to task graph with dependency ordering"
-```
-
----
+## Chunk 5: Automation & Cost Controls
 
 ### Task 16: Hook System
 
@@ -1791,6 +1801,185 @@ Simple cron scheduler using `setInterval` with minute-level granularity. Parses 
 ```bash
 git add src/automation/scheduler.ts tests/automation/scheduler.test.ts
 git commit -m "feat: scheduler — cron-like recurring tasks for integrity checks and reparses"
+```
+
+---
+
+### Task 17a: Cost Control System
+
+**Files:**
+- Create: `src/core/costs.ts`
+- Test: `tests/core/costs.test.ts`
+
+- [ ] **Step 1: Write failing tests**
+
+Test:
+- Tracks daily token usage across agents (aggregates from `agents` table)
+- Returns percentage of daily budget consumed
+- Triggers warning callback at 80% threshold
+- Triggers hard stop callback at 100% threshold
+- Estimates task cost based on task count and average tokens per task
+- Handles unlimited budget (daily_token_budget = 0) — no warnings
+
+- [ ] **Step 2: Run → FAIL**
+
+- [ ] **Step 3: Implement costs.ts**
+
+`CostController` class. Methods: `getDailyUsage()`, `checkBudget()` returns `{ok, percentage, remaining}`, `estimateTaskCost(taskCount)`. Takes callbacks for `onWarning` and `onBudgetExhausted` (used by Telegram later). Queries `agents` table for today's token totals.
+
+- [ ] **Step 4: Run → PASS**
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/core/costs.ts tests/core/costs.test.ts
+git commit -m "feat: cost control system — budget tracking, 80%/100% thresholds, estimation"
+```
+
+---
+
+### Task 17b: Automation-Aware Topology Parsers
+
+**Files:**
+- Create: `src/topology/parsers/config-parsers.ts`
+- Test: `tests/topology/config-parsers.test.ts`
+- Create: `tests/fixtures/topology/package.json`
+- Create: `tests/fixtures/topology/ci-workflow.yml`
+- Create: `tests/fixtures/topology/Dockerfile`
+
+- [ ] **Step 1: Create fixture files**
+
+Create sample `package.json` with scripts, a `.github/workflows/ci.yml`, and a `Dockerfile` for testing.
+
+- [ ] **Step 2: Write failing tests**
+
+Test:
+- Parses `package.json` scripts into script nodes with edges to referenced files
+- Parses GitHub Actions YAML into CI nodes with edges to referenced scripts/commands
+- Parses Dockerfile into infrastructure nodes with edges to copied files
+- Returns empty results for non-existent files (graceful)
+
+- [ ] **Step 3: Run → FAIL**
+
+- [ ] **Step 4: Implement config-parsers.ts**
+
+Simple parsers using JSON.parse (package.json), a YAML parser (js-yaml — add as dependency), and regex-based extraction for Dockerfile COPY/ADD commands. Each returns nodes and edges compatible with the knowledge graph. No tree-sitter needed — these are config files.
+
+- [ ] **Step 5: Run → PASS**
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/topology/parsers/config-parsers.ts tests/topology/config-parsers.test.ts tests/fixtures/topology/
+git commit -m "feat: automation-aware topology — parse package.json scripts, GitHub Actions, Dockerfile"
+```
+
+---
+
+### Task 17c: Phase State Machine
+
+**Files:**
+- Create: `src/core/phase-machine.ts`
+- Test: `tests/core/phase-machine.test.ts`
+
+- [ ] **Step 1: Write failing tests**
+
+Test:
+- Starts at Phase 1
+- Allows forward transitions: 1→2, 2→3, 3→4
+- Allows backward transitions: 4→2, 3→2, any→1
+- Rejects invalid transitions (e.g., 1→4 direct)
+- Stores current phase in session
+- Preserves knowledge graph on backward transitions
+- `requestScopeChange()` returns to Phase 1 from any phase
+
+- [ ] **Step 2: Run → FAIL**
+
+- [ ] **Step 3: Implement phase-machine.ts**
+
+`PhaseMachine` class with `currentPhase`, `transition(to)` with validation, `canTransition(to)` predicate. Emits events on transition (consumed by hooks and Telegram). Stores phase in current session.
+
+- [ ] **Step 4: Run → PASS**
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/core/phase-machine.ts tests/core/phase-machine.test.ts
+git commit -m "feat: phase state machine — forward/backward transitions, scope change support"
+```
+
+---
+
+### Task 17d: Log Rotation & Global Config
+
+**Files:**
+- Modify: `src/core/logger.ts`
+- Create: `src/core/global-config.ts`
+- Test: `tests/core/logger-rotation.test.ts`
+- Test: `tests/core/global-config.test.ts`
+
+- [ ] **Step 1: Write failing tests for log rotation**
+
+Test:
+- `cleanOldLogs(maxAgeDays)` deletes log files older than N days
+- Keeps recent logs untouched
+- Handles empty log directory gracefully
+
+- [ ] **Step 2: Write failing tests for global config**
+
+Test:
+- Loads from `~/.one/global.json` (use temp dir in tests)
+- Falls back to defaults when file doesn't exist
+- Merges global → project config (project overrides global)
+- Stores default model, default budget, shared Telegram token
+
+- [ ] **Step 3: Run → FAIL**
+
+- [ ] **Step 4: Add `cleanOldLogs` method to Logger, implement GlobalConfig**
+
+`Logger.cleanOldLogs(maxAgeDays)` scans log dir, checks file dates, removes old ones.
+`GlobalConfig` loads from `~/.one/global.json`, same pattern as project Config.
+
+- [ ] **Step 5: Run → PASS**
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/core/logger.ts src/core/global-config.ts tests/core/logger-rotation.test.ts tests/core/global-config.test.ts
+git commit -m "feat: log rotation (7-day auto-delete) and global config (~/.one/global.json)"
+```
+
+---
+
+### Task 17e: Claude Code Version Check
+
+**Files:**
+- Create: `src/core/constants.ts`
+- Create: `src/core/compat.ts`
+- Test: `tests/core/compat.test.ts`
+
+- [ ] **Step 1: Write failing tests**
+
+Test:
+- Parses `claude --version` output to extract version number
+- Compares against minimum supported version
+- Returns `{compatible, currentVersion, minVersion}` result
+- Handles missing `claude` binary gracefully (returns incompatible with error message)
+
+- [ ] **Step 2: Run → FAIL**
+
+- [ ] **Step 3: Implement constants.ts and compat.ts**
+
+`constants.ts` exports `MIN_CLAUDE_CODE_VERSION = '1.0.0'`.
+`compat.ts` exports `checkClaudeCodeVersion()` — runs `claude --version` via `execSync`, parses output, compares semver.
+
+- [ ] **Step 4: Run → PASS**
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/core/constants.ts src/core/compat.ts tests/core/compat.test.ts
+git commit -m "feat: Claude Code version compatibility check"
 ```
 
 ---
@@ -1860,39 +2049,7 @@ git commit -m "feat: Telegram message formatter — status reports, inline butto
 
 ---
 
-### Task 20: Phase Handlers
-
-**Files:**
-- Create: `src/telegram/handlers.ts`
-- Test: `tests/telegram/handlers.test.ts`
-
-- [ ] **Step 1: Write failing tests**
-
-Test each phase handler:
-- Phase 1: receives user message, forwards to Claude Code agent, returns response
-- Phase 2: receives research results, formats and sends to user
-- Phase 3: presents spec section, handles approve/revise buttons
-- Phase 4: handles checkpoint buttons (Continue/Pause/Change Plan)
-- Handles `remember:` messages → stores as pattern
-
-- [ ] **Step 2: Run → FAIL**
-
-- [ ] **Step 3: Implement handlers.ts**
-
-Each handler function takes the Telegram context + One's brain state, delegates to the appropriate subsystem (Claude agent for conversation, orchestrator for build), and sends formatted responses.
-
-- [ ] **Step 4: Run → PASS**
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/telegram/handlers.ts tests/telegram/handlers.test.ts
-git commit -m "feat: Telegram phase handlers — understand, research, spec, build message routing"
-```
-
----
-
-## Chunk 7: Phase Logic & CLI
+## Chunk 7: Phase Logic, Handlers & CLI
 
 ### Task 21: Phase 1 — Understand
 
@@ -2025,6 +2182,72 @@ git commit -m "feat: Phase 4 build — autonomous execution with checkpoints, co
 
 ---
 
+### Task 24a: Telegram Phase Handlers
+
+**Files:**
+- Create: `src/telegram/handlers.ts`
+- Test: `tests/telegram/handlers.test.ts`
+
+- [ ] **Step 1: Write failing tests**
+
+Test each phase handler (now that phase logic exists to delegate to):
+- Phase 1: receives user message, forwards to understand module, returns response
+- Phase 2: receives research results, formats and sends to user
+- Phase 3: presents spec section, handles approve/revise buttons
+- Phase 4: handles checkpoint buttons (Continue/Pause/Change Plan)
+- Handles `remember:` messages → stores as pattern
+- Handles "wait, I want to change the scope" → triggers phase machine backward transition
+
+- [ ] **Step 2: Run → FAIL**
+
+- [ ] **Step 3: Implement handlers.ts**
+
+Each handler function takes the Telegram context + One's brain state, delegates to the appropriate phase module, and sends formatted responses via the formatter.
+
+- [ ] **Step 4: Run → PASS**
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/telegram/handlers.ts tests/telegram/handlers.test.ts
+git commit -m "feat: Telegram phase handlers — message routing to phase modules"
+```
+
+---
+
+### Task 24b: Existing Project Support
+
+**Files:**
+- Modify: `src/cli/index.ts` (init flow)
+- Modify: `src/telegram/handlers.ts` (existing project UX)
+- Test: `tests/cli/existing-project.test.ts`
+
+- [ ] **Step 1: Write failing tests**
+
+Test:
+- Detects existing files in project directory (non-empty dir with source files)
+- Runs topology scan on existing codebase
+- Reports stats: file count, languages, dangling imports, test coverage
+- Presents action buttons: [Add a feature] [Fix something] [Refactor] [Just explore]
+- Enters Phase 1 with pre-populated knowledge graph (File/Function nodes from scan)
+
+- [ ] **Step 2: Run → FAIL**
+
+- [ ] **Step 3: Implement existing project flow**
+
+On `one` init in non-empty directory: run `TopologyEngine.fullScan()`, query integrity checker for stats, format stats message, send via Telegram with action buttons. On button selection, enter Phase 1 with context.
+
+- [ ] **Step 4: Run → PASS**
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/cli/index.ts src/telegram/handlers.ts tests/cli/existing-project.test.ts
+git commit -m "feat: existing project support — scan, stats, action selection"
+```
+
+---
+
 ### Task 25: CLI — Init, Stop, Status, Logs
 
 **Files:**
@@ -2068,28 +2291,40 @@ git commit -m "feat: CLI — init, status, stop, logs, reset-telegram commands"
 
 **Files:**
 - Create: `src/service.ts`
+- Test: `tests/core/service.test.ts`
 
-- [ ] **Step 1: Implement service.ts**
+- [ ] **Step 1: Write failing tests**
+
+Test (with mocked subsystems):
+- Startup initializes brain, config, logger, telegram bot, scheduler
+- Detects interrupted sessions on startup and runs recovery
+- Checks Claude Code version and logs warning if incompatible
+- Runs log rotation on startup (clean old logs)
+- Resumes Phase 4 orchestrator if session was in build phase
+- Shuts down cleanly: stops scheduler, closes brain, kills agents
+
+- [ ] **Step 2: Run → FAIL**
+
+- [ ] **Step 3: Implement service.ts**
 
 The main service that pm2 runs. On start:
-1. Load config
-2. Open brain.db
-3. Check for interrupted sessions → recover
-4. Check Claude Code version
-5. Start Telegram bot
-6. Start scheduler
-7. If existing session in Phase 4: resume orchestrator
-8. Otherwise: wait for Telegram messages
+1. Load config (project + global)
+2. Open brain.db, run migrations
+3. Check Claude Code version
+4. Clean old logs
+5. Check for interrupted sessions → recover (mark interrupted, kill orphaned PIDs, full reparse)
+6. Start Telegram bot
+7. Start scheduler
+8. If existing session in Phase 4: resume orchestrator
+9. Otherwise: wait for Telegram messages
 
-- [ ] **Step 2: Verify it starts without errors**
+- [ ] **Step 4: Run → PASS**
 
-Run: `npx tsx src/service.ts --help` (should not crash)
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add src/service.ts
-git commit -m "feat: main service entry point — startup, recovery, Telegram, scheduler"
+git add src/service.ts tests/core/service.test.ts
+git commit -m "feat: main service entry point — startup, recovery, version check, scheduler"
 ```
 
 ---
