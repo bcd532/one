@@ -203,8 +203,10 @@ class AifGate:
             return 0.5
 
     def _query_foundry_nearest(self, text: str) -> Optional[dict]:
-        """Find the most similar existing memory in Foundry."""
-        try:
+        """Find the most similar existing memory in Foundry. Times out after 3 seconds."""
+        import concurrent.futures
+
+        def _query():
             from foundry_sdk_runtime import AllowBetaFeatures
             from orion_push_sdk.ontology.search._memory_entry_object_type import MemoryEntryObjectType
 
@@ -226,6 +228,12 @@ class AifGate:
                     "source": r.source or "",
                     "tm_label": r.tm_label or "",
                 }
+            return None
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(_query).result(timeout=3)
+        except (concurrent.futures.TimeoutError, Exception):
             return None
         except Exception:
             return None

@@ -42,6 +42,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             raw_text TEXT NOT NULL,
             source TEXT NOT NULL,
             timestamp TEXT NOT NULL,
+            project TEXT DEFAULT 'global',
             hdc_vector BLOB,
             tm_label TEXT DEFAULT 'unclassified',
             regime_tag TEXT DEFAULT 'default',
@@ -63,6 +64,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (memory_id, entity_id)
         );
 
+        CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project);
         CREATE INDEX IF NOT EXISTS idx_memories_source ON memories(source);
         CREATE INDEX IF NOT EXISTS idx_memories_label ON memories(tm_label);
         CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp);
@@ -85,6 +87,19 @@ def _blob_to_vec(blob: bytes) -> np.ndarray:
 
 # ── Memory operations ──────────────────────────────────────────────
 
+_current_project = "global"
+
+
+def set_project(name: str) -> None:
+    """Set the active project scope for memory operations."""
+    global _current_project
+    _current_project = name
+
+
+def get_project() -> str:
+    return _current_project
+
+
 def push_memory(
     raw_text: str,
     source: str,
@@ -92,8 +107,9 @@ def push_memory(
     regime_tag: str = "default",
     aif_confidence: float = 0.0,
     hdc_vector: Optional[list[float]] = None,
+    project: Optional[str] = None,
 ) -> str:
-    """Store a memory entry. Returns the generated memory ID."""
+    """Store a memory entry scoped to the current project. Returns the memory ID."""
     if hdc_vector is None:
         from .hdc import encode_tagged
         vec = encode_tagged(raw_text, role=source)
@@ -102,11 +118,12 @@ def push_memory(
     mid = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     blob = _vec_to_blob(hdc_vector)
+    proj = project or _current_project
 
     conn = _get_conn()
     conn.execute(
-        "INSERT INTO memories (id, raw_text, source, timestamp, hdc_vector, tm_label, regime_tag, aif_confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (mid, raw_text, source, now, blob, tm_label, regime_tag, aif_confidence),
+        "INSERT INTO memories (id, raw_text, source, timestamp, project, hdc_vector, tm_label, regime_tag, aif_confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (mid, raw_text, source, now, proj, blob, tm_label, regime_tag, aif_confidence),
     )
     conn.commit()
     return mid
@@ -115,8 +132,9 @@ def push_memory(
 def recall(
     query: str,
     n: int = 10,
+    project: Optional[str] = None,
 ) -> list[dict]:
-    """Vector similarity search. Returns top N memories ranked by cosine similarity."""
+    """Vector similarity search scoped to project, with global fallback."""
     from .hdc import encode_text
 
     query_vec = encode_text(query).astype(np.float32)
@@ -124,9 +142,13 @@ def recall(
     if query_norm < 1e-10:
         return []
 
+    proj = project or _current_project
     conn = _get_conn()
+
+    # Project-scoped first, then global fallback
     rows = conn.execute(
-        "SELECT id, raw_text, source, timestamp, hdc_vector, tm_label, regime_tag, aif_confidence FROM memories WHERE hdc_vector IS NOT NULL"
+        "SELECT id, raw_text, source, timestamp, project, hdc_vector, tm_label, regime_tag, aif_confidence FROM memories WHERE hdc_vector IS NOT NULL AND (project = ? OR project = 'global') ORDER BY CASE WHEN project = ? THEN 0 ELSE 1 END",
+        (proj, proj),
     ).fetchall()
 
     scored = []
@@ -147,6 +169,7 @@ def recall(
             "raw_text": row["raw_text"],
             "source": row["source"],
             "timestamp": row["timestamp"],
+            "project": row["project"],
             "tm_label": row["tm_label"],
             "regime_tag": row["regime_tag"],
             "aif_confidence": row["aif_confidence"],

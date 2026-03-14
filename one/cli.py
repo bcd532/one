@@ -3,6 +3,7 @@
 
 import argparse
 import os
+import sys
 
 from .proxy import ClaudeProxy
 from .app import OneApp
@@ -27,8 +28,23 @@ def main():
 
     args = parser.parse_args()
 
+    # Detect environment
+    from .init import run_init, get_project_name
+    env = run_init()
+
+    if not env["claude"]:
+        print("error: claude CLI not found — install from https://claude.ai/download")
+        sys.exit(1)
+
+    # Set project scope
+    cwd = args.dir or os.getcwd()
+    project = get_project_name(cwd)
+    from . import store
+    store.set_project(project)
+
+    # Foundry (optional)
     foundry = None
-    if not args.no_foundry:
+    if not args.no_foundry and env["foundry"]:
         try:
             from .client import get_client
             foundry = get_client()
@@ -37,7 +53,7 @@ def main():
 
     proxy = ClaudeProxy(
         model=args.model,
-        cwd=args.dir or os.getcwd(),
+        cwd=cwd,
         session_id=args.session or args.resume,
         resume=args.resume is not None,
         continue_last=args.continue_last,
@@ -48,7 +64,7 @@ def main():
         disallowed_tools=args.disallowed_tools,
     )
 
-    app = OneApp(proxy, foundry_client=foundry)
+    app = OneApp(proxy, foundry_client=foundry, project=project)
     app.run()
 
 

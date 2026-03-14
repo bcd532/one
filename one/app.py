@@ -173,11 +173,13 @@ class OneApp(App):
         self,
         proxy: ClaudeProxy,
         foundry_client=None,
+        project: str = "global",
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.proxy = proxy
         self.foundry = foundry_client
+        self.project = project
 
         from .backend import get_backend
         self.backend = get_backend(foundry=foundry_client)
@@ -227,7 +229,7 @@ class OneApp(App):
         g_tag = "[green]●[/] gemma" if gemma_ok else "[#666666]○ gemma[/]"
         model = self.proxy.model or "opus"
         chat.mount(Static(
-            f"    [bold cyan]one[/] [#666666]v0.1[/]  {f_tag}  {g_tag}  [#666666]model:{model}[/]"
+            f"    [bold cyan]one[/] [#666666]v0.1[/]  {f_tag}  {g_tag}  [#666666]model:{model}  project:{self.project}[/]"
         ))
         chat.mount(Static(
             "    [#444444]esc:quit  ctrl+l:clear  ctrl+r:recall  /cost  /session[/]"
@@ -288,8 +290,20 @@ class OneApp(App):
         ).start()
 
     def _recall_and_send(self, text: str) -> None:
-        """Background thread: recall context, enrich message, send to Claude."""
-        enriched = self._maybe_recall(text)
+        """Background thread: recall context, enrich message, send to Claude.
+
+        If recall takes more than 5 seconds, sends the raw message and
+        lets recall finish for the next turn.
+        """
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self._maybe_recall, text)
+            try:
+                enriched = future.result(timeout=5)
+            except (concurrent.futures.TimeoutError, Exception):
+                enriched = text  # skip recall, send raw
+
         self.proxy.send(enriched)
 
     # ── Timer ───────────────────────────────────────────────────────
