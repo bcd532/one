@@ -272,14 +272,23 @@ class OneApp(App):
         if len(self._recent_texts) > 5:
             self._recent_texts = self._recent_texts[-5:]
 
+        # Show message and start timer IMMEDIATELY
         chat = self.query_one("#chat-scroll")
         chat.mount(ChatMessage(f"[bold]{text}[/]", classes="user-msg"))
         chat.scroll_end(animate=False)
-
         self._timer_start = time.time()
         self._start_timer()
         self._capture("user", text)
 
+        # All recall + send happens in background — UI never blocks
+        threading.Thread(
+            target=self._recall_and_send,
+            args=(text,),
+            daemon=True,
+        ).start()
+
+    def _recall_and_send(self, text: str) -> None:
+        """Background thread: recall context, enrich message, send to Claude."""
         enriched = self._maybe_recall(text)
         self.proxy.send(enriched)
 
