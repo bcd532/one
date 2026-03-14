@@ -632,6 +632,9 @@ one/
 │   ├── intelligence/
 │   │   ├── patterns.ts        # Error→fix pattern detection and storage
 │   │   └── planner.ts         # Spec→tasks→dependency graph→execution order
+│   ├── automation/
+│   │   ├── hooks.ts           # Hook system — fire events, run user scripts
+│   │   └── scheduler.ts       # Cron-like scheduled tasks (integrity, reparse)
 │   ├── telegram/
 │   │   ├── bot.ts             # Telegram bot setup, message routing
 │   │   ├── handlers.ts        # Message handlers per phase
@@ -921,6 +924,110 @@ may not work." Does not hard-block — the developer may know what they're doing
 
 ---
 
+## Automation Layer
+
+One both **builds projects that include automation** and **is itself extensible
+via automation**. Two sides of the same coin.
+
+### Side A: One manages project automation
+
+When One builds a project, it doesn't just write code — it sets up the
+operational infrastructure around it. The topology engine tracks these as
+first-class nodes in the knowledge graph.
+
+**What One can create and manage in target projects:**
+
+| Automation | How One handles it |
+|---|---|
+| **Cron jobs** | Generates cron entries or scheduled task configs. Tracks them as nodes (type=cron) with edges to the code they invoke. Integrity check: cron references a script/endpoint that doesn't exist → flagged. |
+| **Git hooks** | Creates pre-commit, pre-push, post-merge hooks. Tracked as nodes linked to the files they validate. If a hook references a linter config that was deleted → flagged. |
+| **Webhook endpoints** | When building APIs, tracks inbound webhook receivers and their handlers. If a handler is registered but the function is a stub → flagged. |
+| **Bot processes** | Telegram bots, Discord bots, Slack bots — One treats them as long-running components. Tracks their entry points, command handlers, and dependencies. If a bot command is registered but the handler is missing → flagged. |
+| **Scripts** | Build scripts, deploy scripts, seed scripts. Tracked as nodes with edges to the files and configs they depend on. If a deploy script references a Dockerfile that doesn't exist → flagged. |
+| **CI/CD pipelines** | GitHub Actions, GitLab CI configs. Tracked as nodes. If a workflow references a test script that was removed → flagged. |
+| **Plugins/Extensions** | If the project has a plugin system, One tracks plugin manifests, entry points, and hook registrations. Unregistered plugins or plugins referencing removed APIs → flagged. |
+
+**The key insight:** These are all just nodes and edges in the knowledge graph.
+A cron job that calls `scripts/daily-report.sh` is a node with an edge to that
+file. If the file is deleted, the topology engine catches the dangling edge —
+same as a broken import. One doesn't need special handling per automation type,
+just the ability to parse the relevant config formats.
+
+**Topology parser extensions for automation (v1):**
+- `package.json` scripts — parsed into script nodes
+- `.github/workflows/*.yml` — parsed into CI nodes
+- `crontab` / systemd timers — parsed into cron nodes
+- Dockerfile / docker-compose.yml — parsed into infrastructure nodes
+
+### Side B: One itself is extensible
+
+Developers can extend One's behavior at key lifecycle points.
+
+**Hook system:**
+
+One fires hooks at defined events. Hooks are shell commands or scripts
+configured in `.one/config.json`:
+
+```json
+{
+  "hooks": {
+    "on_phase_change": "scripts/notify-team.sh",
+    "on_task_complete": "scripts/run-custom-checks.sh",
+    "on_agent_spawn": null,
+    "on_agent_done": "scripts/post-agent-audit.sh",
+    "on_error": "scripts/alert-pagerduty.sh",
+    "on_integrity_fail": null,
+    "on_session_start": null,
+    "on_session_end": "scripts/daily-summary.sh"
+  }
+}
+```
+
+| Hook | Fires when | Receives (stdin JSON) |
+|---|---|---|
+| `on_phase_change` | Phase transitions (1→2, 2→3, etc.) | `{from, to, session_id}` |
+| `on_task_complete` | An agent finishes a task | `{task_id, agent_id, status, files_changed}` |
+| `on_agent_spawn` | A new Claude Code agent starts | `{agent_id, task_id, briefing_summary}` |
+| `on_agent_done` | An agent process exits | `{agent_id, exit_code, tokens_used, patterns_learned}` |
+| `on_error` | An agent hits an unrecoverable error | `{agent_id, error, attempts}` |
+| `on_integrity_fail` | Topology integrity check finds issues | `{violations: [{type, source, target}]}` |
+| `on_session_start` | A new session begins | `{session_id, resumed_from}` |
+| `on_session_end` | A session ends (clean or interrupted) | `{session_id, status, tasks_completed, tokens_used}` |
+
+Hooks run as fire-and-forget child processes. They receive context as JSON on
+stdin. A hook's exit code is logged but does not block One's operation (except
+`on_task_complete` and `on_integrity_fail` — if these exit non-zero, One pauses
+and asks the user via Telegram before continuing).
+
+**Plugin system (v2):**
+
+v1 ships with hooks (simple, powerful, language-agnostic). v2 adds a plugin
+system for deeper integration:
+- Plugins are npm packages that export a `OnePlugin` interface
+- Plugins can register custom topology parsers (new languages, new config formats)
+- Plugins can add custom integrity checks
+- Plugins can add custom Telegram commands
+- Plugin registry in `.one/config.json`: `{"plugins": ["one-plugin-python", "one-plugin-docker"]}`
+
+**Scheduled tasks (cron-like):**
+
+One can run recurring checks on the project. Configured in `.one/config.json`:
+
+```json
+{
+  "schedules": {
+    "integrity_check": "*/30 * * * *",
+    "full_reparse": "0 */6 * * *",
+    "backup_brain": "0 0 * * *"
+  }
+}
+```
+
+These run as long as One's background service is alive. Results are logged
+and Telegram notifications sent on failures.
+
+---
+
 ## v1 Scope Summary
 
 What ships in v1:
@@ -928,15 +1035,19 @@ What ships in v1:
 - Four-phase lifecycle (full)
 - Knowledge graph (full)
 - Topology engine (TypeScript/JavaScript only)
+- Automation-aware topology (package.json scripts, GitHub Actions, Dockerfile, cron)
 - Single-agent execution
 - Error intelligence (full)
 - Crash recovery
 - Cost controls
 - Existing project support
+- Hook system for extensibility
+- Scheduled tasks (integrity checks, reparses)
 
 What's deferred to v2+:
 - Multi-agent parallel execution
 - Python/Rust/Go parsers
+- Plugin system (npm-based OnePlugin interface)
 - Web dashboard
 - Team collaboration features
 
