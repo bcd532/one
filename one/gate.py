@@ -85,15 +85,19 @@ class AifGate:
         local_novelty = self._local_novelty(text)
         temporal_novelty = self._temporal_novelty(text)
         info_score = self._information_type(text, source)
+        excitation = self._excitation(text, source)
 
-        # Temporal novelty can boost past local redundancy:
-        # a topic mentioned days ago is still worth re-storing.
         novelty = max(local_novelty, temporal_novelty)
 
+        # Excitation acts as a multiplier — breakthroughs override everything
+        if excitation > 0.8:
+            return min(1.0, 0.9 + excitation * 0.1)
+
         final = (
-            0.25 * content_score +
-            0.30 * novelty +
-            0.45 * info_score
+            0.20 * content_score +
+            0.25 * novelty +
+            0.35 * info_score +
+            0.20 * excitation
         )
 
         return min(1.0, max(0.0, final))
@@ -152,6 +156,13 @@ class AifGate:
         elif length < 100:
             return base * 0.8
         return base
+
+    # ── Excitation detection ──────────────────────────────────────────
+
+    def _excitation(self, text: str, source: str) -> float:
+        """Score speaker excitation using pattern-based heuristics."""
+        from .excitation import score_excitation
+        return score_excitation(text, source)
 
     # ── Local novelty (same-session buffer) ─────────────────────────
 
