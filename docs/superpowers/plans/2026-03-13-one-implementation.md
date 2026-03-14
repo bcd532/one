@@ -12,8 +12,8 @@
 
 **Dependency notes:**
 - Planner (Task 14) must be built before Orchestrator (Task 15) — orchestrator consumes task graph
-- Phase Handlers (Task 22) are built after Phase logic (Tasks 23-26) — handlers delegate to phases
-- Cost Controls (Task 17) must exist before Phase 4 Build (Task 26)
+- Phase Handlers (Task 24a) are built after Phase logic (Tasks 21-24) — handlers delegate to phases
+- Cost Controls (Task 17a) must exist before Phase 4 Build (Task 24)
 
 ---
 
@@ -36,8 +36,8 @@ npm init -y
 - [ ] **Step 2: Install core dependencies**
 
 ```bash
-npm install better-sqlite3 grammy commander tree-sitter tree-sitter-typescript
-npm install -D typescript vitest @types/node @types/better-sqlite3 tsx
+npm install better-sqlite3 grammy commander tree-sitter tree-sitter-typescript js-yaml
+npm install -D typescript vitest @types/node @types/better-sqlite3 @types/js-yaml tsx
 ```
 
 - [ ] **Step 3: Create tsconfig.json**
@@ -1508,20 +1508,29 @@ git commit -m "feat: topology engine with full scan, incremental reparse, import
 
 - [ ] **Step 1: Write failing tests**
 
-Tests should verify detection of:
-- Dangling imports (import from file that doesn't exist)
-- Orphan files (no imports to or from)
-- Stub functions (declared but empty body)
-- Unimplemented interface methods
+Tests should verify detection of all 8 spec integrity checks:
+- Dangling imports (import from file/symbol that doesn't exist)
+- Unimplemented interfaces (interface declared, not all methods implemented)
+- Dead routes (route registered but handler function missing — detected via call graph)
+- Orphan files (no imports to or from, no edges)
+- Missing tests (exported function with no corresponding test file edge)
+- Broken call chains (function signature changed but callers reference old signature)
+- Config gaps (code references env var not found in .env or config files)
+- Spec→Code gaps (goal/component node with no `implements` edge to any file)
 
 - [ ] **Step 2: Run → FAIL**
 
 - [ ] **Step 3: Implement integrity.ts**
 
-Queries the knowledge graph for:
-- Files with unresolved imports (`imports` table where `resolved = 0`)
-- Nodes with no edges (orphans, excluding goal/decision/research types)
-- Functions with body hash indicating empty/stub
+Queries the knowledge graph and topology tables for:
+- `imports` table where `resolved = 0` → dangling imports
+- Interface nodes with method count vs. implementing class method count → unimplemented
+- Function nodes referenced by route-type edges with no implementation → dead routes
+- File/function nodes with no edges (excluding goal/decision/research types) → orphans
+- Exported function nodes with no `tests` edge → missing tests
+- Call edges where target function signature hash differs from caller's expected → broken chains
+- String literals matching env var patterns with no corresponding config node → config gaps
+- Goal/component nodes with no `implements` edge to any file node → spec gaps
 
 Returns array of `Violation` objects: `{ type, severity, source, target, message }`.
 
@@ -1618,9 +1627,9 @@ Using fixture stream-json data, verify:
 - Captures `{"type": "learning", ...}` blocks from agent output
 - Tracks token usage from stream events
 
-- [ ] **Step 2: Run → FAIL**
+- [ ] **Step 3: Run → FAIL**
 
-- [ ] **Step 3: Implement watcher.ts**
+- [ ] **Step 4: Implement watcher.ts**
 
 Wraps a `ClaudeProcess`, subscribes to events, and:
 - Logs all actions to `action_log` table
@@ -1629,12 +1638,12 @@ Wraps a `ClaudeProcess`, subscribes to events, and:
 - Triggers topology reparse on file-modifying tool calls
 - Accumulates token counts
 
-- [ ] **Step 4: Run → PASS**
+- [ ] **Step 5: Run → PASS**
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/agents/watcher.ts tests/agents/watcher.test.ts
+git add src/agents/watcher.ts tests/agents/watcher.test.ts tests/fixtures/stream-json/sample-session.jsonl
 git commit -m "feat: agent watcher — stream monitoring, error capture, pattern extraction"
 ```
 
