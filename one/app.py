@@ -205,6 +205,7 @@ class OneApp(App):
         self._timer_handle: Optional[Timer] = None
 
         self._ctx_tracker = None
+        self._preloaded_context: Optional[str] = None  # Gemma result ready for next msg
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="chat-scroll")
@@ -560,10 +561,7 @@ class OneApp(App):
         return self._ctx_tracker
 
     def _maybe_recall(self, text: str) -> str:
-        """Inject recalled context when appropriate (session start, topic shift, periodic)."""
-        if not self.foundry:
-            return text
-
+        """Inject recalled context when appropriate. Never blocks on Gemma."""
         ctx = self._get_ctx_tracker()
         ctx.encode(text, source="user")
         shifted = ctx.shifted
@@ -573,23 +571,42 @@ class OneApp(App):
         if not first_msg and not shifted and not periodic:
             return text
 
-        query = " ".join(self._recent_texts[-3:])
+        # If Gemma preloaded a condensed context from last turn, use it
+        if self._preloaded_context:
+            context_block = self._preloaded_context
+            self._preloaded_context = None
+            self._add_status("↻ recalled (preloaded)")
+            return f"{context_block}\n\n{text}"
 
-        use_gemma = shifted and not first_msg
-        context_block = self._do_recall(query, use_gemma=use_gemma)
+        # Otherwise fast raw recall (no Gemma, no blocking)
+        query = " ".join(self._recent_texts[-3:])
+        context_block = self._do_recall(query, use_gemma=False)
         if not context_block:
             return text
 
         reason = "start" if first_msg else ("topic shift" if shifted else f"turn {self._turn_counter}")
         self._add_status(f"↻ recalled ({reason})")
 
+        # Kick off Gemma in background for NEXT recall
+        if shifted or periodic:
+            threading.Thread(
+                target=self._preload_gemma_context,
+                args=(query,),
+                daemon=True,
+            ).start()
+
         return f"{context_block}\n\n{text}"
 
-    def _force_recall(self) -> None:
-        if not self.foundry:
-            self._add_status("foundry offline")
-            return
+    def _preload_gemma_context(self, query: str) -> None:
+        """Background: run Gemma condensation and cache result for next message."""
+        try:
+            result = self._do_recall(query, use_gemma=True)
+            if result:
+                self._preloaded_context = result
+        except Exception:
+            pass
 
+    def _force_recall(self) -> None:
         query = " ".join(self._recent_texts[-3:]) if self._recent_texts else "recent"
         memories = self._do_recall_raw(query)
 
