@@ -59,14 +59,45 @@ def _user_length_anomaly(text: str, baseline_avg: float = 50.0) -> float:
     return 0.0
 
 
+def _has_substance(text: str) -> bool:
+    """Check if a message contains actual technical/actionable content beyond emotion."""
+    cleaned = re.sub(r'[^a-zA-Z\s/.]', '', text).lower().strip()
+    words = [w for w in cleaned.split() if len(w) > 2]
+    # Filter out pure profanity/emotion words
+    noise_words = {
+        "fuck", "shit", "damn", "hell", "omg", "wtf", "lmao", "bro", "dude",
+        "the", "this", "that", "what", "why", "how", "not", "dont", "its",
+        "fucking", "fuuuck", "fuckkkk", "shittt",
+    }
+    substance_words = [w for w in words if w not in noise_words and not re.match(r'^(.)\1{2,}$', w)]
+    return len(substance_words) >= 3
+
+
+def _is_rage(text: str) -> bool:
+    """Detect pure rage/frustration without actionable content."""
+    caps = _user_caps_ratio(text)
+    profanity = _user_profanity_density(text)
+    has_content = _has_substance(text)
+    # High emotion + no substance = rage
+    return (caps > 0.5 or profanity > 0.3) and not has_content
+
+
 def score_user_excitation(text: str) -> float:
-    """Score user message excitation 0.0 (calm) to 1.0 (breakthrough)."""
+    """Score user message excitation 0.0 (calm) to 1.0 (breakthrough).
+
+    Distinguishes rage (high arousal, no content) from eureka
+    (high arousal, real content). Rage scores near zero.
+    """
+    # Rage filter — venting without substance
+    if _is_rage(text):
+        return 0.05
+
     caps = _user_caps_ratio(text)
     profanity = _user_profanity_density(text)
     emphasis = _user_emphasis(text)
     length = _user_length_anomaly(text)
 
-    # Eureka phrases
+    # Eureka phrases — only trigger if there's actual content
     eureka = 0.0
     eureka_patterns = [
         r'\b(eureka|holy shit|wait wait|oh my god|oh shit|no way)\b',
@@ -74,10 +105,11 @@ def score_user_excitation(text: str) -> float:
         r'\b(dude|bro|yo)\b.{0,20}(this|that|it)\b.{0,20}(works?|means?|could)',
         r'\b(we found|i found|figured out|cracked it|got it)\b',
     ]
-    for p in eureka_patterns:
-        if re.search(p, text, re.I):
-            eureka = 0.9
-            break
+    if _has_substance(text):
+        for p in eureka_patterns:
+            if re.search(p, text, re.I):
+                eureka = 0.9
+                break
 
     score = max(
         eureka,

@@ -134,6 +134,10 @@ class AifGate:
         for pattern in REDACT_PATTERNS:
             if pattern.search(stripped):
                 return True
+        # Pure rage without substance — not worth storing
+        from .excitation import _is_rage
+        if source == "user" and _is_rage(stripped):
+            return True
         return False
 
     # ── Content quality ─────────────────────────────────────────────
