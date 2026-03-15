@@ -27,8 +27,9 @@ def _byte_codebook() -> np.ndarray:
 
 @lru_cache(maxsize=4096)
 def _word_vec(word: str) -> np.ndarray:
-    """Deterministic bipolar random vector for a word, seeded by hash."""
-    h = hash(word) & 0xFFFFFFFF
+    """Deterministic bipolar random vector for a word, seeded by stable hash."""
+    import hashlib
+    h = int(hashlib.sha256(word.encode()).hexdigest()[:8], 16)
     rng = np.random.default_rng(SEED ^ h)
     return rng.choice([-1.0, 1.0], size=DIM)
 

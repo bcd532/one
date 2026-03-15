@@ -147,8 +147,8 @@ def recall(
 
     # Project-scoped first, then global fallback
     rows = conn.execute(
-        "SELECT id, raw_text, source, timestamp, project, hdc_vector, tm_label, regime_tag, aif_confidence FROM memories WHERE hdc_vector IS NOT NULL AND (project = ? OR project = 'global') ORDER BY CASE WHEN project = ? THEN 0 ELSE 1 END",
-        (proj, proj),
+        "SELECT id, raw_text, source, timestamp, project, hdc_vector, tm_label, regime_tag, aif_confidence FROM memories WHERE hdc_vector IS NOT NULL AND (project = ? OR project = 'global') ORDER BY timestamp DESC LIMIT 2000",
+        (proj,),
     ).fetchall()
 
     scored = []
