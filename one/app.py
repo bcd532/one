@@ -243,7 +243,23 @@ class OneApp(App):
 
         threading.Thread(target=self._push_loop, daemon=True).start()
 
+        # Sync rules from Foundry to local cache (background, non-blocking)
+        if self.foundry:
+            threading.Thread(target=self._sync_rules, daemon=True).start()
+
         self.query_one("#input-box").focus()
+
+    def _sync_rules(self) -> None:
+        """Pull rules from Foundry into local SQLite for fast per-turn access."""
+        try:
+            if hasattr(self.backend, "sync_rules_from_foundry"):
+                count = self.backend.sync_rules_from_foundry(self.project)
+                if count > 0:
+                    self.call_from_thread(
+                        self._add_status, f"synced {count} rules from foundry"
+                    )
+        except Exception:
+            pass
 
     # ── Input handling ──────────────────────────────────────────────
 
