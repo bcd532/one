@@ -70,7 +70,7 @@ def _has_substance(text: str) -> bool:
         "fucking", "fuuuck", "fuckkkk", "shittt",
     }
     substance_words = [w for w in words if w not in noise_words and not re.match(r'^(.)\1{2,}$', w)]
-    return len(substance_words) >= 3
+    return len(substance_words) >= 2
 
 
 def _is_rage(text: str) -> bool:

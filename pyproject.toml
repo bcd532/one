@@ -1,8 +1,8 @@
 [project]
 name = "one"
 version = "0.1.0"
-description = "Infinite context for Claude CLI — HDC encoding, AIF gating, Palantir AIP ontology"
-requires-python = ">=3.10,<3.14"
+description = "Persistent memory for AI coding tools"
+requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = [
     "numpy",
@@ -10,10 +10,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-foundry = ["orion_push_sdk==0.1.0"]
+foundry = [
+    "orion_push_sdk==0.1.0",
+    "foundry_sdk_runtime",
+]
 
 [project.scripts]
 one = "one.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/bcd532/one"
+Repository = "https://github.com/bcd532/one"
 
 [build-system]
 requires = ["setuptools"]

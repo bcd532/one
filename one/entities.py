@@ -4,12 +4,11 @@ Identifies structured entities (file paths, technical concepts, tools,
 projects) and optionally persists them to Foundry with memory linkage.
 """
 
+from __future__ import annotations
+
 import re
 from typing import Optional
 from datetime import datetime, timezone
-
-from orion_push_sdk import FoundryClient
-from foundry_sdk_runtime.ontology_edit import ObjectLocator
 
 
 # ── Extraction patterns ─────────────────────────────────────────────
@@ -113,7 +112,7 @@ def extract_from_tool_call(tool_name: str, tool_input: dict) -> list[dict]:
 _entity_cache: set[str] = set()
 
 
-def ensure_entity(client: FoundryClient, entity: dict) -> None:
+def ensure_entity(client, entity: dict) -> None:
     """Create an entity in Foundry if it does not already exist. Results are cached."""
     cache_key = f"{entity['type']}:{entity['name']}"
     if cache_key in _entity_cache:
@@ -122,7 +121,7 @@ def ensure_entity(client: FoundryClient, entity: dict) -> None:
     now = datetime.now(timezone.utc).isoformat()
 
     try:
-        from orion_push_sdk.ontology.search._entity_object_type import EntityObjectType
+        from orion_push_sdk.ontology.search._entity_object_type import EntityObjectType  # noqa: F811
         et = EntityObjectType()
         existing = client.ontology.objects.Entity.where(
             et.name == entity["name"]
@@ -148,7 +147,7 @@ def ensure_entity(client: FoundryClient, entity: dict) -> None:
 
 
 def link_memory_to_entities(
-    client: FoundryClient,
+    client,
     memory_entry_id: str,
     entities: list[dict],
 ) -> None:
@@ -157,6 +156,8 @@ def link_memory_to_entities(
         return
 
     try:
+        from foundry_sdk_runtime.ontology_edit import ObjectLocator
+
         edits = client.ontology.edits()
         for entity in entities:
             ensure_entity(client, entity)

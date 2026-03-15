@@ -5,19 +5,20 @@ Foundry ontology, and optionally condenses results via a local LLM before
 injecting them as tagged context blocks.
 """
 
-from foundry_sdk_runtime import AllowBetaFeatures
-from orion_push_sdk import FoundryClient
-from orion_push_sdk.ontology.search._memory_entry_object_type import MemoryEntryObjectType
+from __future__ import annotations
 
 from .hdc import encode_text_to_list
 
 
 def recall(
-    client: FoundryClient,
+    client,
     query: str,
     n: int = 10,
 ) -> list[dict]:
     """Find the N most relevant memories for a query via vector similarity."""
+    from foundry_sdk_runtime import AllowBetaFeatures
+    from orion_push_sdk.ontology.search._memory_entry_object_type import MemoryEntryObjectType
+
     vec = encode_text_to_list(query)
     mt = MemoryEntryObjectType()
 
@@ -66,7 +67,7 @@ def format_condensed(condensed: str) -> str:
 
 
 def recall_context(
-    client: FoundryClient,
+    client,
     query: str,
     n: int = 10,
     max_chars: int = 4000,

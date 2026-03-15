@@ -4,17 +4,19 @@ Manages MemoryEntry and Entity objects on a Palantir AIP Foundry instance.
 Authentication is configured via environment variables or local config files.
 """
 
+from __future__ import annotations
+
 import os
 from datetime import datetime, timezone
-from typing import Optional
-
-from orion_push_sdk import FoundryClient, UserTokenAuth
+from typing import Any, Optional
 
 VECTOR_DIM = 4096
 
 
-def get_client() -> FoundryClient:
+def get_client() -> Any:
     """Create a Foundry client from environment variables or ~/.one/config."""
+    from orion_push_sdk import FoundryClient, UserTokenAuth
+
     hostname = os.environ.get("ONE_FOUNDRY_HOST", "")
     token = os.environ.get("FOUNDRY_TOKEN", "")
 
@@ -44,7 +46,7 @@ def get_client() -> FoundryClient:
 
 
 def push_memory(
-    client: FoundryClient,
+    client,
     raw_text: str,
     source: str,
     tm_label: str = "unclassified",
@@ -74,7 +76,7 @@ def push_memory(
 
 
 def push_entity(
-    client: FoundryClient,
+    client,
     entity_id: str,
     name: str,
     entity_type: str = "unknown",
