@@ -165,6 +165,9 @@ class OneApp(App):
         ("escape", "quit", "Quit"),
         ("ctrl+l", "clear_chat", "Clear"),
         ("ctrl+r", "force_recall", "Recall"),
+        ("ctrl+e", "show_entities", "Entities"),
+        ("ctrl+u", "show_undo", "Undo"),
+        ("ctrl+t", "toggle_thinking", "Think"),
     ]
 
     status_text: reactive[str] = reactive("ready")
@@ -210,6 +213,8 @@ class OneApp(App):
         self._preloaded_context: Optional[str] = None
         self._recent_files: list[str] = []
         self._recent_tools: list[str] = []
+        self._last_injected_context: str = ""
+        self._show_thinking: bool = True
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="chat-scroll")
@@ -272,8 +277,11 @@ class OneApp(App):
 
         event.input.value = ""
 
-        # one commands
-        ONE_COMMANDS = {"/quit", "/exit", "/q", "/clear", "/cost", "/recall", "/rules", "/stats"}
+        ONE_COMMANDS = {
+            "/quit", "/exit", "/q", "/clear", "/cost", "/recall",
+            "/rules", "/stats", "/entities", "/search", "/undo",
+            "/context", "/forget", "/help", "/think",
+        }
 
         if text in ("/quit", "/exit", "/q"):
             self.exit()
@@ -293,12 +301,32 @@ class OneApp(App):
         if text == "/stats":
             self._show_stats()
             return
+        if text == "/entities":
+            self.action_show_entities()
+            return
+        if text == "/undo":
+            self.action_show_undo()
+            return
+        if text == "/context":
+            self._show_last_context()
+            return
+        if text == "/think":
+            self.action_toggle_thinking()
+            return
+        if text == "/help":
+            self._show_help()
+            return
+        if text.startswith("/search "):
+            self._search_memories(text[8:].strip())
+            return
+        if text.startswith("/forget "):
+            self._forget_rule(text[8:].strip())
+            return
         if text.startswith("/rule "):
             self._add_manual_rule(text[6:].strip())
             return
 
-        # Anything starting with / that isn't ours → pass to Claude as-is
-        # This handles /commit, /review, /compact, /help, /usage, etc.
+        # Unknown /commands pass through to Claude
         if text.startswith("/") and text.split()[0] not in ONE_COMMANDS:
             self._send_message(text)
             return
@@ -410,10 +438,13 @@ class OneApp(App):
             if bt == "thinking":
                 self._in_thinking = True
                 self._thinking_text = ""
-                block = ThinkingBlock("[dim italic]thinking...[/]", classes="thinking-block")
-                chat.mount(block)
-                self._active_thinking = block
-                chat.scroll_end(animate=False)
+                if self._show_thinking:
+                    block = ThinkingBlock("[dim italic]thinking...[/]", classes="thinking-block")
+                    chat.mount(block)
+                    self._active_thinking = block
+                    chat.scroll_end(animate=False)
+                else:
+                    self._active_thinking = None
 
             elif bt == "text":
                 self._in_text = True
@@ -621,6 +652,155 @@ class OneApp(App):
     def action_force_recall(self) -> None:
         self._force_recall()
 
+    def action_show_entities(self) -> None:
+        """Show the entity knowledge graph for the current project."""
+        try:
+            from . import store
+            ents = store.get_entities(limit=30)
+            chat = self.query_one("#chat-scroll")
+            if not ents:
+                chat.mount(Static("  [dim]no entities yet[/]"))
+                chat.scroll_end(animate=False)
+                return
+
+            lines = [f"[cyan bold]entities[/] ({len(ents)})"]
+            for e in ents:
+                count = e.get("observation_count", 0)
+                etype = e.get("type", "?")
+                name = e.get("name", "?")
+                bar = "█" * min(20, count)
+                lines.append(f"  [yellow]{etype:8s}[/] {name} [dim]{bar} {count}x[/]")
+
+                # Show related entities
+                related = store.get_related_entities(name, limit=3)
+                for r in related:
+                    lines.append(f"             [dim]↔ {r['name']} ({r['shared_memories']} shared)[/]")
+
+            chat.mount(Static("\n".join(lines)))
+            chat.scroll_end(animate=False)
+        except Exception as e:
+            self._add_status(f"entities error: {e}")
+
+    def action_show_undo(self) -> None:
+        """Show recent git changes — what Claude just did to the codebase."""
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--stat", "HEAD~1"],
+                capture_output=True, text=True, timeout=5,
+                cwd=self.proxy.cwd,
+            )
+            chat = self.query_one("#chat-scroll")
+            if result.returncode == 0 and result.stdout.strip():
+                chat.mount(Static(f"[cyan bold]recent changes[/]\n[dim]{result.stdout.strip()}[/]"))
+            else:
+                # Try unstaged changes
+                result2 = subprocess.run(
+                    ["git", "diff", "--stat"],
+                    capture_output=True, text=True, timeout=5,
+                    cwd=self.proxy.cwd,
+                )
+                if result2.stdout.strip():
+                    chat.mount(Static(f"[cyan bold]unstaged changes[/]\n[dim]{result2.stdout.strip()}[/]"))
+                else:
+                    chat.mount(Static("  [dim]no recent changes[/]"))
+            chat.scroll_end(animate=False)
+        except Exception as e:
+            self._add_status(f"undo error: {e}")
+
+    def action_toggle_thinking(self) -> None:
+        """Toggle visibility of thinking blocks."""
+        self._show_thinking = not self._show_thinking
+        state = "on" if self._show_thinking else "off"
+        self._add_status(f"thinking display: {state}")
+
+    def _show_last_context(self) -> None:
+        """Show what context was injected on the last recall."""
+        chat = self.query_one("#chat-scroll")
+        if self._last_injected_context:
+            display = self._last_injected_context
+            if len(display) > 1000:
+                display = display[:997] + "..."
+            chat.mount(Static(f"[cyan bold]last injected context[/]\n[dim]{display}[/]"))
+        else:
+            chat.mount(Static("  [dim]no context injected yet[/]"))
+        chat.scroll_end(animate=False)
+
+    def _search_memories(self, query: str) -> None:
+        """Search memory store without injecting into Claude."""
+        if not query:
+            return
+        memories = self._do_recall_raw(query)
+        chat = self.query_one("#chat-scroll")
+        if not memories:
+            chat.mount(Static(f"  [dim]no results for '{query}'[/]"))
+            chat.scroll_end(animate=False)
+            return
+
+        lines = [f"[cyan bold]search: {query}[/] ({len(memories)} results)"]
+        for m in memories:
+            src = m.get("source", "?")
+            label = m.get("tm_label", "")
+            conf = m.get("aif_confidence", 0)
+            sim = m.get("similarity", 0)
+            text = m.get("raw_text", "")[:70]
+            score_tag = f"sim:{sim:.2f}" if sim else f"conf:{conf:.1f}"
+            lines.append(f"  [dim][{src}|{label}|{score_tag}] {text}[/]")
+        chat.mount(Static("\n".join(lines)))
+        chat.scroll_end(animate=False)
+
+    def _forget_rule(self, text: str) -> None:
+        """Remove a rule by partial text match."""
+        try:
+            from .rules import get_all_rules
+            rules = get_all_rules(self.project)
+            matches = [r for r in rules if text.lower() in r["rule_text"].lower()]
+            if not matches:
+                self._add_status(f"no rule matching '{text}'")
+                return
+
+            from . import store
+            conn = store._get_conn()
+            for m in matches:
+                conn.execute("UPDATE rule_nodes SET active=0 WHERE id=?", (m["id"],))
+            conn.commit()
+            self._add_status(f"deactivated {len(matches)} rule(s)")
+        except Exception as e:
+            self._add_status(f"forget error: {e}")
+
+    def _show_help(self) -> None:
+        """Show all available commands."""
+        chat = self.query_one("#chat-scroll")
+        lines = [
+            "[cyan bold]one commands[/]",
+            "  [yellow]/clear[/]         clear the screen",
+            "  [yellow]/cost[/]          session cost and turn count",
+            "  [yellow]/recall[/]        force memory recall",
+            "  [yellow]/rules[/]         show the rule tree",
+            "  [yellow]/rule <text>[/]   add a manual rule",
+            "  [yellow]/forget <text>[/] deactivate a rule by text match",
+            "  [yellow]/stats[/]         memory store statistics",
+            "  [yellow]/entities[/]      show the knowledge graph",
+            "  [yellow]/search <q>[/]    search memories",
+            "  [yellow]/context[/]       show last injected context",
+            "  [yellow]/undo[/]          show recent git changes",
+            "  [yellow]/think[/]         toggle thinking block visibility",
+            "  [yellow]/help[/]          this help",
+            "",
+            "[cyan bold]keybindings[/]",
+            "  [yellow]ctrl+l[/]         clear screen",
+            "  [yellow]ctrl+r[/]         force recall",
+            "  [yellow]ctrl+e[/]         show entities",
+            "  [yellow]ctrl+u[/]         show git changes",
+            "  [yellow]ctrl+t[/]         toggle thinking",
+            "  [yellow]esc[/]            quit",
+            "",
+            "[cyan bold]claude commands[/] (pass through)",
+            "  [dim]/commit  /review  /compact  /help  /usage  etc.[/]",
+        ]
+        chat.mount(Static("\n".join(lines)))
+        chat.scroll_end(animate=False)
+
     def _add_status(self, text: str) -> None:
         chat = self.query_one("#chat-scroll")
         chat.mount(Static(f"  [dim]{text}[/]"))
@@ -673,7 +853,9 @@ class OneApp(App):
         if not parts:
             return text
 
-        return "\n\n".join(parts) + "\n\n" + text
+        injected = "\n\n".join(parts)
+        self._last_injected_context = injected
+        return injected + "\n\n" + text
 
     def _get_active_rules(self, text: str) -> str:
         """Get contextually active rules for the current turn."""
