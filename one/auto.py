@@ -228,7 +228,7 @@ class AutoLoop:
                 self._last_response_time = time.time()
 
     def _build_context(self) -> str:
-        """Gather project context for the auto run."""
+        """Gather project context for the auto run, including relevant playbooks."""
         parts = []
 
         try:
@@ -248,10 +248,19 @@ class AutoLoop:
         except Exception:
             pass
 
+        # Inject relevant playbooks from prior successful runs
+        try:
+            from .playbook import recall_playbook_context
+            pb_ctx = recall_playbook_context(self.project, self._goal)
+            if pb_ctx:
+                parts.append(pb_ctx)
+        except Exception:
+            pass
+
         return "\n\n".join(parts) if parts else ""
 
     def _store_auto_session(self) -> None:
-        """Store the auto run as a condensed memory."""
+        """Store the auto run as a condensed memory and generate a playbook."""
         try:
             from . import store
             from .hdc import encode_tagged
@@ -262,6 +271,32 @@ class AutoLoop:
                 summary, "auto", "auto_session", "condensed", 0.95, vec.tolist(),
                 project=self.project,
             )
+        except Exception:
+            pass
+
+        # Auto-generate a playbook from the completed session
+        self._generate_playbook()
+
+    def _generate_playbook(self) -> None:
+        """Distill the completed auto session into a reusable playbook."""
+        try:
+            from .playbook import create_playbook
+
+            steps_summary = "\n".join(
+                f"Step {i + 1}: {text[:300]}"
+                for i, text in enumerate(self._step_texts[-20:])
+            )
+
+            completed = "[AUTO_COMPLETE]" in (self._accumulated_text or "")
+            outcome = "completed successfully" if completed else f"stopped after {self._turn_count} turns"
+
+            create_playbook(
+                project=self.project,
+                task_description=self._goal[:500],
+                steps_taken=steps_summary,
+                outcome=outcome,
+            )
+            self.on_log("auto", "playbook generated from session")
         except Exception:
             pass
 

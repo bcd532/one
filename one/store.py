@@ -311,10 +311,30 @@ def stats() -> dict:
         WHERE type = 'file' ORDER BY observation_count DESC LIMIT 5
     """).fetchall()
 
+    # Synthesis and playbook counts (tables may not exist yet)
+    synthesis_count = 0
+    playbook_count = 0
+    research_count = 0
+    try:
+        synthesis_count = conn.execute("SELECT COUNT(*) FROM syntheses").fetchone()[0]
+    except Exception:
+        pass
+    try:
+        playbook_count = conn.execute("SELECT COUNT(*) FROM playbooks").fetchone()[0]
+    except Exception:
+        pass
+    try:
+        research_count = conn.execute("SELECT COUNT(*) FROM research_topics").fetchone()[0]
+    except Exception:
+        pass
+
     return {
         "memories": mem_count,
         "entities": ent_count,
         "links": link_count,
+        "syntheses": synthesis_count,
+        "playbooks": playbook_count,
+        "research_topics": research_count,
         "top_concepts": [dict(r) for r in top_concepts],
         "top_files": [dict(r) for r in top_files],
     }

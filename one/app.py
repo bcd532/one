@@ -561,6 +561,7 @@ class OneApp(App):
             "/sessions", "/session", "/export",
             "/auto", "/stop",
             "/watch", "/unwatch", "/generate",
+            "/synthesize", "/research", "/playbooks", "/frontier",
         }
 
         if text in ("/quit", "/exit", "/q"):
@@ -628,6 +629,18 @@ class OneApp(App):
             return
         if text == "/generate":
             self._generate_claude_md()
+            return
+        if text == "/synthesize":
+            self._run_synthesis()
+            return
+        if text.startswith("/research "):
+            self._start_research(text[10:].strip())
+            return
+        if text == "/playbooks":
+            self._show_playbooks()
+            return
+        if text == "/frontier":
+            self._show_frontier()
             return
 
         # Unknown /commands pass through to Claude
@@ -1196,6 +1209,10 @@ class OneApp(App):
             "  [yellow]/export[/]          export current session as markdown",
             "  [yellow]/auto <goal>[/]     start autonomous agent loop",
             "  [yellow]/stop[/]            stop autonomous loop",
+            "  [yellow]/synthesize[/]      generate insights from entity graph",
+            "  [yellow]/research <topic>[/] deep research with gap analysis",
+            "  [yellow]/playbooks[/]       list reusable strategy playbooks",
+            "  [yellow]/frontier[/]        show research frontier (gaps + questions)",
             "  [yellow]/watch [dir][/]     watch directory for file changes",
             "  [yellow]/unwatch[/]         stop watching",
             "  [yellow]/generate[/]        generate CLAUDE.md from rules + entities",
@@ -1302,6 +1319,176 @@ class OneApp(App):
             self._add_status(f"wrote CLAUDE.md ({len(content)} chars) to {output_path}")
         except Exception as e:
             self._add_status(f"generate error: {e}")
+
+    def _run_synthesis(self) -> None:
+        """Run synthesis on the current project's entity graph."""
+        chat = self.query_one("#chat-scroll")
+        chat.mount(Static("  [dim]running synthesis...[/]"))
+        chat.scroll_end(animate=False)
+
+        def _do_synthesis():
+            try:
+                from .synthesis import run_deep_synthesis, get_syntheses_count
+                results = run_deep_synthesis(self.project, depth=3)
+                total = get_syntheses_count(self.project)
+
+                if not results:
+                    self.call_from_thread(
+                        self._add_status,
+                        "synthesis: no new cross-domain connections found"
+                    )
+                    return
+
+                lines = [f"[cyan bold]synthesis[/] ({len(results)} new, {total} total)"]
+                for r in results:
+                    depth_tag = f"[dim]d{r['depth']}[/] " if r["depth"] > 0 else ""
+                    conf = r["confidence"]
+                    hyp = r["hypothesis"][:120]
+                    if r["entity_a"] != "meta":
+                        lines.append(
+                            f"  {depth_tag}[yellow]{r['entity_a']}[/] + "
+                            f"[yellow]{r['entity_b']}[/] [{conf:.0%}]"
+                        )
+                    else:
+                        lines.append(f"  {depth_tag}[bold]meta-insight[/] [{conf:.0%}]")
+                    lines.append(f"    [dim]{hyp}[/]")
+
+                def _show():
+                    c = self.query_one("#chat-scroll")
+                    c.mount(Static("\n".join(lines)))
+                    c.scroll_end(animate=False)
+
+                self.call_from_thread(_show)
+            except Exception as e:
+                self.call_from_thread(self._add_status, f"synthesis error: {e}")
+
+        threading.Thread(target=_do_synthesis, daemon=True).start()
+
+    def _start_research(self, topic: str) -> None:
+        """Start deep research on a topic."""
+        if not topic:
+            self._add_status("usage: /research <topic>")
+            return
+
+        chat = self.query_one("#chat-scroll")
+        chat.mount(Static(
+            f"[bold cyan]RESEARCH[/] [dim]— {topic[:80]}[/]\n"
+            f"[dim]Investigating with gap analysis. Results stored as memories.[/]"
+        ))
+        chat.scroll_end(animate=False)
+
+        def _do_research():
+            try:
+                from .research import start_research
+
+                def log_fn(msg):
+                    try:
+                        self.call_from_thread(self._add_status, f"[research] {msg}")
+                    except Exception:
+                        pass
+
+                result = start_research(
+                    topic=topic,
+                    project=self.project,
+                    turn_budget=10,
+                    on_log=log_fn,
+                )
+
+                status = result["status"]
+                findings = result["findings"]
+                gaps = result["gaps_remaining"]
+                turns = result["turns_used"]
+
+                summary = (
+                    f"research {status}: {findings} findings, "
+                    f"{gaps} open gaps, {turns} turns"
+                )
+                self.call_from_thread(self._add_status, summary)
+            except Exception as e:
+                self.call_from_thread(self._add_status, f"research error: {e}")
+
+        threading.Thread(target=_do_research, daemon=True).start()
+
+    def _show_playbooks(self) -> None:
+        """Display all playbooks for the current project."""
+        try:
+            from .playbook import list_playbooks
+            playbooks = list_playbooks(self.project)
+            chat = self.query_one("#chat-scroll")
+
+            if not playbooks:
+                chat.mount(Static("  [dim]no playbooks yet — complete an /auto run to generate one[/]"))
+                chat.scroll_end(animate=False)
+                return
+
+            lines = [f"[cyan bold]playbooks[/] ({len(playbooks)})"]
+            for pb in playbooks:
+                cat = pb.get("category", "general")
+                task = pb.get("task_description", "")[:60]
+                recalled = pb.get("times_recalled", 0)
+                created = pb.get("created", "?")
+                if isinstance(created, str) and len(created) > 16:
+                    created = created[:16]
+                lines.append(
+                    f"  [yellow]{cat}[/] {task} "
+                    f"[dim]{recalled}x recalled  {created}[/]"
+                )
+                decisions = pb.get("key_decisions", "")
+                if decisions:
+                    for line in decisions.split("\n")[:3]:
+                        line = line.strip()
+                        if line:
+                            lines.append(f"    [dim]{line[:80]}[/]")
+
+            chat.mount(Static("\n".join(lines)))
+            chat.scroll_end(animate=False)
+        except Exception as e:
+            self._add_status(f"playbooks error: {e}")
+
+    def _show_frontier(self) -> None:
+        """Show the current research frontier: open gaps and next questions."""
+        try:
+            from .research import research_frontier
+            frontier = research_frontier(self.project)
+            chat = self.query_one("#chat-scroll")
+
+            gaps = frontier.get("open_gaps", [])
+            topics = frontier.get("active_topics", [])
+
+            if not gaps and not topics:
+                chat.mount(Static(
+                    "  [dim]no research frontier — run /research <topic> first[/]"
+                ))
+                chat.scroll_end(animate=False)
+                return
+
+            lines = [f"[cyan bold]research frontier[/]"]
+
+            if topics:
+                lines.append(f"\n  [bold]active topics ({len(topics)}):[/]")
+                for t in topics:
+                    lines.append(f"    [yellow]{t['topic'][:60]}[/]")
+
+            if gaps:
+                lines.append(f"\n  [bold]open gaps ({len(gaps)}):[/]")
+                for g in gaps:
+                    lines.append(
+                        f"    [dim]{g['topic'][:30]}:[/] {g['question'][:80]}"
+                    )
+            else:
+                lines.append("\n  [dim]no open gaps — all questions resolved[/]")
+
+            recent = frontier.get("recent_findings", [])
+            if recent:
+                lines.append(f"\n  [bold]recent findings ({len(recent)}):[/]")
+                for f in recent[:5]:
+                    content = f.get("content", "")[:80]
+                    lines.append(f"    [dim]{content}[/]")
+
+            chat.mount(Static("\n".join(lines)))
+            chat.scroll_end(animate=False)
+        except Exception as e:
+            self._add_status(f"frontier error: {e}")
 
     def _show_sessions(self) -> None:
         """Display recent sessions."""
