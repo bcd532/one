@@ -117,7 +117,7 @@ def push_memory(
 
     mid = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
-    blob = _vec_to_blob(hdc_vector)
+    blob = _vec_to_blob(hdc_vector) if hdc_vector is not None else None
     proj = project or _current_project
 
     conn = _get_conn()
@@ -231,7 +231,7 @@ def ensure_entity(entity: dict) -> int:
             (name, etype, now, now),
         )
         conn.commit()
-        return cur.lastrowid
+        return cur.lastrowid or 0
 
 
 def link_memory_entity(memory_id: str, entity_id: int) -> None:

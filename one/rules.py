@@ -96,10 +96,10 @@ def add_rule(
          confidence, source_count, now, now),
     )
     conn.commit()
-    return cur.lastrowid
+    return cur.lastrowid or 0
 
 
-def update_rule(rule_id: int, confidence: float = None, source_count: int = None) -> None:
+def update_rule(rule_id: int, confidence: float | None = None, source_count: int | None = None) -> None:
     """Bump a rule's confidence or source count."""
     conn = _get_conn()
     now = datetime.now(timezone.utc).isoformat()
