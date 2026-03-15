@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--no-recall", action="store_true")
     parser.add_argument("--permission-mode", default="acceptEdits",
                         choices=["acceptEdits", "bypassPermissions", "default", "dontAsk", "plan", "auto"])
+    parser.add_argument("--yolo", action="store_true", help="bypass all permissions")
     parser.add_argument("--system-prompt", default=None)
     parser.add_argument("--append-system-prompt", default=None)
     parser.add_argument("--allowed-tools", nargs="*", default=None)
@@ -51,13 +52,16 @@ def main():
         except Exception:
             pass
 
+    # --yolo shortcut
+    perm_mode = "bypassPermissions" if args.yolo else args.permission_mode
+
     proxy = ClaudeProxy(
         model=args.model,
         cwd=cwd,
         session_id=args.session or args.resume,
         resume=args.resume is not None,
         continue_last=args.continue_last,
-        permission_mode=args.permission_mode,
+        permission_mode=perm_mode,
         system_prompt=args.system_prompt,
         append_system_prompt=args.append_system_prompt,
         allowed_tools=args.allowed_tools,

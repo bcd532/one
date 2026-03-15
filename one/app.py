@@ -234,7 +234,8 @@ class OneApp(App):
             f"    [bold cyan]one[/] [#666666]v0.1[/]  {f_tag}  {g_tag}  [#666666]model:{model}  project:{self.project}[/]"
         ))
         chat.mount(Static(
-            "    [#444444]esc:quit  ctrl+l:clear  ctrl+r:recall  /cost  /session[/]"
+            "    [#444444]esc:quit  ctrl+l:clear  ctrl+r:recall  /rules  /stats  /cost[/]\n"
+            "    [#444444]claude: /commit  /review  /compact  /help  — all pass through[/]"
         ))
         chat.mount(Rule())
 
@@ -271,6 +272,9 @@ class OneApp(App):
 
         event.input.value = ""
 
+        # one commands
+        ONE_COMMANDS = {"/quit", "/exit", "/q", "/clear", "/cost", "/recall", "/rules", "/stats"}
+
         if text in ("/quit", "/exit", "/q"):
             self.exit()
             return
@@ -286,8 +290,17 @@ class OneApp(App):
         if text == "/rules":
             self._show_rules()
             return
+        if text == "/stats":
+            self._show_stats()
+            return
         if text.startswith("/rule "):
             self._add_manual_rule(text[6:].strip())
+            return
+
+        # Anything starting with / that isn't ours → pass to Claude as-is
+        # This handles /commit, /review, /compact, /help, /usage, etc.
+        if text.startswith("/") and text.split()[0] not in ONE_COMMANDS:
+            self._send_message(text)
             return
 
         self._send_message(text)
@@ -722,6 +735,24 @@ class OneApp(App):
         _tree(None)
         chat.mount(Static("\n".join(lines)))
         chat.scroll_end(animate=False)
+
+    def _show_stats(self) -> None:
+        """Display memory store statistics."""
+        try:
+            s = self.backend.stats()
+            chat = self.query_one("#chat-scroll")
+            lines = ["[cyan bold]store stats[/]"]
+            for k, v in s.items():
+                if isinstance(v, list):
+                    lines.append(f"  [dim]{k}:[/]")
+                    for item in v:
+                        lines.append(f"    [dim]{item}[/]")
+                else:
+                    lines.append(f"  [dim]{k}: {v}[/]")
+            chat.mount(Static("\n".join(lines)))
+            chat.scroll_end(animate=False)
+        except Exception as e:
+            self._add_status(f"stats error: {e}")
 
     def _add_manual_rule(self, text: str) -> None:
         """Manually add a rule via /rule command."""
