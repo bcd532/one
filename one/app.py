@@ -336,6 +336,7 @@ class OneApp(App):
         from .backend import get_backend
         self.backend = get_backend(foundry=foundry_client)
         self._pending_push: Queue = Queue()
+        self._auto_loop = None
 
         self._in_thinking = False
         self._in_text = False
@@ -558,6 +559,7 @@ class OneApp(App):
             "/rules", "/stats", "/entities", "/search", "/undo",
             "/context", "/forget", "/help", "/think",
             "/sessions", "/session", "/export",
+            "/auto", "/stop",
         }
 
         if text in ("/quit", "/exit", "/q"):
@@ -610,6 +612,12 @@ class OneApp(App):
             return
         if text.startswith("/rule "):
             self._add_manual_rule(text[6:].strip())
+            return
+        if text.startswith("/auto "):
+            self._start_auto(text[6:].strip())
+            return
+        if text == "/stop":
+            self._stop_auto()
             return
 
         # Unknown /commands pass through to Claude
@@ -982,6 +990,10 @@ class OneApp(App):
         self._current_tool = None
         self._turn_complete.set()
 
+        # Feed response to auto loop if running
+        if self._auto_loop and self._auto_loop.running and self._response_text:
+            self._auto_loop.feed_response(self._response_text)
+
         # Update session turn count
         if self._session_id:
             try:
@@ -1172,6 +1184,8 @@ class OneApp(App):
             "  [yellow]/sessions[/]        list past sessions",
             "  [yellow]/session <id>[/]    show session messages",
             "  [yellow]/export[/]          export current session as markdown",
+            "  [yellow]/auto <goal>[/]     start autonomous agent loop",
+            "  [yellow]/stop[/]            stop autonomous loop",
             "  [yellow]/help[/]            this help",
             "",
             "[cyan bold]keybindings[/]",
@@ -1189,6 +1203,48 @@ class OneApp(App):
         ]
         chat.mount(Static("\n".join(lines)))
         chat.scroll_end(animate=False)
+
+    def _start_auto(self, goal: str) -> None:
+        """Start the autonomous agent loop."""
+        if not goal:
+            self._add_status("usage: /auto <goal>")
+            return
+
+        if self._auto_loop and self._auto_loop.running:
+            self._add_status("auto already running — /stop first")
+            return
+
+        try:
+            from .auto import AutoLoop
+
+            def send_fn(text):
+                self.call_from_thread(self._send_message, text)
+
+            def status_fn(msg):
+                self.call_from_thread(self._notify, msg)
+
+            def complete_fn(msg):
+                self.call_from_thread(self._notify, msg)
+
+            self._auto_loop = AutoLoop(
+                send_to_claude=send_fn,
+                on_status=status_fn,
+                on_complete=complete_fn,
+                max_turns=50,
+                project=self.project,
+            )
+            self._auto_loop.start(goal)
+            self._add_status(f"auto: started — {goal[:50]}")
+        except Exception as e:
+            self._add_status(f"auto error: {e}")
+
+    def _stop_auto(self) -> None:
+        """Stop the autonomous loop."""
+        if self._auto_loop and self._auto_loop.running:
+            self._auto_loop.stop()
+            self._add_status("auto: stopping after current step")
+        else:
+            self._add_status("auto: not running")
 
     def _show_sessions(self) -> None:
         """Display recent sessions."""
