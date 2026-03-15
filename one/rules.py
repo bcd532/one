@@ -83,7 +83,7 @@ def add_rule(
     """Add a rule node to the tree. Returns the node ID."""
     init_rules_schema()
     vec = encode_text(rule_text)
-    blob = vec.tobytes()
+    blob = vec.astype(np.float32).tobytes()
     now = datetime.now(timezone.utc).isoformat()
 
     conn = _get_conn()
@@ -240,7 +240,7 @@ def find_matching_rule(project: str, text: str, threshold: float = 0.6) -> Optio
 
     for r in all_rules:
         if r["hdc_vector"]:
-            rule_vec = np.frombuffer(r["hdc_vector"], dtype=np.float64)
+            rule_vec = np.frombuffer(r["hdc_vector"], dtype=np.float32)
             if rule_vec.shape[0] == text_vec.shape[0]:
                 sim = similarity(text_vec, rule_vec)
                 if sim > best_sim:

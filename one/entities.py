@@ -139,7 +139,7 @@ def ensure_entity(client, entity: dict) -> None:
             first_seen=now,
             last_seen=now,
             observation_count="1",
-            hdc_vector="",
+            hdc_vector="[]",
         )
         _entity_cache.add(cache_key)
     except Exception:
