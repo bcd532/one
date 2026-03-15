@@ -5,11 +5,33 @@ import argparse
 import os
 import sys
 
-from .proxy import ClaudeProxy
-from .app import OneApp
-
 
 def main():
+    # Check for subcommands first
+    if len(sys.argv) > 1 and sys.argv[1] == "remote":
+        from .remote import setup_interactive, start_configured
+        if len(sys.argv) > 2 and sys.argv[2] == "--start":
+            start_configured()
+        else:
+            setup_interactive()
+        return
+
+    if len(sys.argv) > 1 and sys.argv[1] == "server":
+        from .server import start_server
+        port = int(sys.argv[2]) if len(sys.argv) > 2 else 4111
+        server = start_server(port=port)
+        print(f"one server running on http://localhost:{port}")
+        try:
+            while True:
+                import time
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+        return
+
+    from .proxy import ClaudeProxy
+    from .app import OneApp
+
     parser = argparse.ArgumentParser(description="one — persistent-memory Claude interface")
     parser.add_argument("prompt", nargs="?", default=None)
     parser.add_argument("-m", "--model", default="opus")
@@ -29,7 +51,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Detect environment
     from .init import run_init, get_project_name
     env = run_init()
 
@@ -37,13 +58,11 @@ def main():
         print("error: claude CLI not found — install from https://claude.ai/download")
         sys.exit(1)
 
-    # Set project scope
     cwd = args.dir or os.getcwd()
     project = get_project_name(cwd)
     from . import store
     store.set_project(project)
 
-    # Foundry (optional)
     foundry = None
     if not args.no_foundry and env["foundry"]:
         try:
@@ -52,7 +71,6 @@ def main():
         except Exception:
             pass
 
-    # --yolo shortcut
     perm_mode = "bypassPermissions" if args.yolo else args.permission_mode
 
     proxy = ClaudeProxy(
