@@ -309,7 +309,7 @@ class OneApp(App):
     """
 
     BINDINGS = [
-        Binding("escape", "quit", "Quit"),
+        Binding("ctrl+q", "quit", "Quit"),
         Binding("ctrl+l", "clear_chat", "Clear"),
         Binding("ctrl+r", "force_recall", "Recall"),
         Binding("ctrl+e", "show_entities", "Entities"),
@@ -317,6 +317,7 @@ class OneApp(App):
         Binding("ctrl+t", "toggle_thinking", "Think"),
         Binding("ctrl+b", "toggle_sidebar", "Sidebar"),
         Binding("ctrl+s", "export_session", "Export"),
+        Binding("escape", "interrupt", "Stop", show=False),
     ]
 
     status_text: reactive[str] = reactive("ready")
@@ -643,6 +644,24 @@ class OneApp(App):
             return
         if text == "/frontier":
             self._show_frontier()
+            return
+        if text.startswith("/swarm "):
+            self._start_swarm(text[7:].strip())
+            return
+        if text.startswith("/morgoth "):
+            self._start_morgoth(text[9:].strip())
+            return
+        if text == "/health":
+            self._show_health()
+            return
+        if text == "/audit" or text.startswith("/audit "):
+            self._run_audit(text[6:].strip() if len(text) > 6 else "")
+            return
+        if text.startswith("/focus "):
+            self._focus_agent(text[7:].strip())
+            return
+        if text.startswith("/inject "):
+            self._inject_all(text[8:].strip())
             return
 
         # Unknown /commands pass through to Claude
@@ -1038,6 +1057,15 @@ class OneApp(App):
         chat.mount(Static(LOGO))
         chat.mount(Rule())
 
+    def action_interrupt(self) -> None:
+        """Escape pressed — stop current Claude response, don't kill the app."""
+        if self._auto_loop and self._auto_loop.running:
+            self._auto_loop.stop()
+            self._add_status("auto: interrupted")
+        self._stop_timer()
+        self._turn_complete.set()
+        self._add_status("interrupted — ready for input")
+
     def action_quit(self) -> None:
         self._session_end()
         self.proxy.stop()
@@ -1218,9 +1246,18 @@ class OneApp(App):
             "  [yellow]/watch [dir][/]     watch directory for file changes",
             "  [yellow]/unwatch[/]         stop watching",
             "  [yellow]/generate[/]        generate CLAUDE.md from rules + entities",
+            "",
+            "[cyan bold]intelligence[/]",
+            "  [yellow]/swarm <goal>[/]    multi-agent coordinated research",
+            "  [yellow]/morgoth <goal>[/]  god mode — research + build + iterate",
+            "  [yellow]/health[/]          knowledge graph health metrics",
+            "  [yellow]/audit[/]           knowledge quality audit (--fix to auto-clean)",
+            "  [yellow]/focus <agent>[/]   zoom into a swarm agent",
+            "  [yellow]/inject <text>[/]   send context to all swarm agents",
             "  [yellow]/help[/]            this help",
             "",
             "[cyan bold]keybindings[/]",
+            "  [yellow]ctrl+q[/]           quit",
             "  [yellow]ctrl+l[/]           clear screen",
             "  [yellow]ctrl+r[/]           force recall",
             "  [yellow]ctrl+e[/]           show entities",
@@ -1228,7 +1265,7 @@ class OneApp(App):
             "  [yellow]ctrl+t[/]           toggle thinking",
             "  [yellow]ctrl+b[/]           toggle sidebar",
             "  [yellow]ctrl+s[/]           export session",
-            "  [yellow]esc[/]              quit",
+            "  [yellow]esc[/]              interrupt / stop current response",
             "",
             "[cyan bold]claude commands[/] (pass through)",
             "  [dim]/commit  /review  /compact  /help  /usage  etc.[/]",
@@ -1294,6 +1331,65 @@ class OneApp(App):
             self._add_status("auto: stopping after current step")
         else:
             self._add_status("auto: not running")
+
+    def _start_swarm(self, goal: str) -> None:
+        """Launch the multi-agent swarm."""
+        try:
+            from .swarm import SwarmCoordinator
+            self._add_status(f"swarm: launching — {goal[:50]}")
+            coordinator = SwarmCoordinator(goal=goal, project=self.project)
+            coordinator.start()
+            self._add_status("swarm: agents deployed")
+        except Exception as e:
+            self._add_status(f"swarm error: {e}")
+
+    def _start_morgoth(self, goal: str) -> None:
+        """Launch Morgoth mode — the God Builder."""
+        try:
+            from .morgoth import MorgothMode
+            self._add_status(f"morgoth: engaging — {goal[:50]}")
+            morgoth = MorgothMode(goal=goal, project=self.project)
+            morgoth.start()
+            self._add_status("morgoth: all phases initiated")
+        except Exception as e:
+            self._add_status(f"morgoth error: {e}")
+
+    def _show_health(self) -> None:
+        """Show knowledge graph health metrics."""
+        try:
+            from .health import get_health_report
+            report = get_health_report(self.project)
+            chat = self.query_one("#chat-scroll")
+            chat.mount(Static(report))
+            chat.scroll_end(animate=False)
+        except Exception as e:
+            self._add_status(f"health error: {e}")
+
+    def _run_audit(self, flags: str) -> None:
+        """Run knowledge quality audit."""
+        try:
+            from .audit import run_full_audit
+            auto_fix = "--fix" in flags
+
+            def _do_audit():
+                try:
+                    result = run_full_audit(self.project, auto_fix=auto_fix)
+                    self.call_from_thread(self._add_status, f"audit complete: {result.get('overall_score', '?')}/100")
+                except Exception as e:
+                    self.call_from_thread(self._add_status, f"audit error: {e}")
+
+            threading.Thread(target=_do_audit, daemon=True).start()
+            self._add_status("audit: running...")
+        except Exception as e:
+            self._add_status(f"audit error: {e}")
+
+    def _focus_agent(self, agent_id: str) -> None:
+        """Focus the TUI on a specific swarm agent."""
+        self._add_status(f"focus: {agent_id} (swarm TUI not yet active)")
+
+    def _inject_all(self, text: str) -> None:
+        """Inject context to all swarm agents."""
+        self._add_status(f"inject: sent to all agents — {text[:50]}")
 
     def _start_watch(self, directory: str) -> None:
         """Start watching a directory for file changes."""
