@@ -1240,15 +1240,16 @@ class OneApp(App):
                 on_status=status_fn,
                 on_log=log_fn,
                 on_complete=complete_fn,
-                max_turns=100,
                 project=self.project,
             )
             self._auto_loop.start(goal)
 
             chat = self.query_one("#chat-scroll")
+            is_file = self._auto_loop._goal_file
+            display = f"from {is_file}" if is_file else goal[:80]
             chat.mount(Static(
-                f"[bold cyan]AUTO MODE[/] [dim]— {goal}[/]\n"
-                f"[dim]Claude is driving. /stop to interrupt. Max 100 turns.[/]"
+                f"[bold cyan]AUTO MODE[/] [dim]— {display}[/]\n"
+                f"[dim]Claude is driving. No limits. /stop to interrupt.[/]"
             ))
             chat.scroll_end(animate=False)
         except Exception as e:
