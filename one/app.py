@@ -562,6 +562,8 @@ class OneApp(App):
             "/auto", "/stop",
             "/watch", "/unwatch", "/generate",
             "/synthesize", "/research", "/playbooks", "/frontier",
+            "/health", "/audit", "/swarm", "/morgoth",
+            "/focus", "/inject", "/scale",
         }
 
         if text in ("/quit", "/exit", "/q"):
@@ -1404,6 +1406,26 @@ class OneApp(App):
                     f"{gaps} open gaps, {turns} turns"
                 )
                 self.call_from_thread(self._add_status, summary)
+                self.call_from_thread(self._notify, f"research complete: {findings} findings")
+
+                # Inject findings into Claude's context for the next message
+                try:
+                    from .research import research_frontier
+                    frontier = research_frontier(self.project)
+                    if frontier.get("recent_findings"):
+                        findings_text = "\n".join(
+                            f"- {f.get('content', '')[:200]}"
+                            for f in frontier["recent_findings"][:10]
+                        )
+                        inject = (
+                            f"<research-results topic=\"{topic}\">\n"
+                            f"{findings_text}\n"
+                            f"</research-results>"
+                        )
+                        self._preloaded_context = inject
+                except Exception:
+                    pass
+
             except Exception as e:
                 self.call_from_thread(self._add_status, f"research error: {e}")
 
