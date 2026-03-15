@@ -990,9 +990,9 @@ class OneApp(App):
         self._current_tool = None
         self._turn_complete.set()
 
-        # Feed response to auto loop if running
+        # Feed response to auto loop — Claude drives itself
         if self._auto_loop and self._auto_loop.running and self._response_text:
-            self._auto_loop.feed_response(self._response_text)
+            self._auto_loop.on_response_complete(self._response_text)
 
         # Update session turn count
         if self._session_id:
@@ -1205,7 +1205,7 @@ class OneApp(App):
         chat.scroll_end(animate=False)
 
     def _start_auto(self, goal: str) -> None:
-        """Start the autonomous agent loop."""
+        """Start the autonomous agent loop — Claude drives, full autonomy."""
         if not goal:
             self._add_status("usage: /auto <goal>")
             return
@@ -1217,24 +1217,40 @@ class OneApp(App):
         try:
             from .auto import AutoLoop
 
-            def send_fn(text):
-                self.call_from_thread(self._send_message, text)
-
             def status_fn(msg):
-                self.call_from_thread(self._notify, msg)
+                try:
+                    self.call_from_thread(self._notify, msg)
+                except Exception:
+                    pass
+
+            def log_fn(role, msg):
+                try:
+                    self.call_from_thread(self._add_status, f"[auto] {msg}")
+                except Exception:
+                    pass
 
             def complete_fn(msg):
-                self.call_from_thread(self._notify, msg)
+                try:
+                    self.call_from_thread(self._notify, msg)
+                except Exception:
+                    pass
 
             self._auto_loop = AutoLoop(
-                send_to_claude=send_fn,
+                proxy=self.proxy,
                 on_status=status_fn,
+                on_log=log_fn,
                 on_complete=complete_fn,
-                max_turns=50,
+                max_turns=100,
                 project=self.project,
             )
             self._auto_loop.start(goal)
-            self._add_status(f"auto: started — {goal[:50]}")
+
+            chat = self.query_one("#chat-scroll")
+            chat.mount(Static(
+                f"[bold cyan]AUTO MODE[/] [dim]— {goal}[/]\n"
+                f"[dim]Claude is driving. /stop to interrupt. Max 100 turns.[/]"
+            ))
+            chat.scroll_end(animate=False)
         except Exception as e:
             self._add_status(f"auto error: {e}")
 
