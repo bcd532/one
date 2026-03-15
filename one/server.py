@@ -242,6 +242,32 @@ class OneAPIHandler(BaseHTTPRequestHandler):
         elif path == "/api/health":
             self._json_response({"status": "ok", "sessions": len(manager.sessions)})
 
+        elif path == "/graph":
+            from .graph import GRAPH_HTML
+            self._html_response(GRAPH_HTML)
+
+        elif path == "/api/graph":
+            from .graph import get_graph_data
+            self._json_response(get_graph_data())
+
+        elif path.startswith("/api/entity/") and path.endswith("/memories"):
+            # /api/entity/<name>/memories
+            parts = path.split("/")
+            # parts: ['', 'api', 'entity', '<name>', 'memories']
+            if len(parts) >= 5:
+                from urllib.parse import unquote
+                entity_name = unquote(parts[3])
+                from .graph import get_entity_memories
+                self._json_response(get_entity_memories(entity_name))
+            else:
+                self._error(400, "invalid entity path")
+
+        elif path == "/api/claudemd":
+            from .claudemd import generate_claude_md
+            from . import store
+            project = parse_qs(parsed.query).get("project", [store.get_project()])[0]
+            self._json_response({"project": project, "content": generate_claude_md(project)})
+
         else:
             self._error(404, "not found")
 
@@ -336,6 +362,13 @@ class OneAPIHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
+
+    def _html_response(self, html, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(html.encode())
 
     def _error(self, status, message):
         self._json_response({"error": message}, status)
