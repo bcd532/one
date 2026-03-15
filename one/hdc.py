@@ -162,7 +162,7 @@ def encode_tagged(text: str, **tags: str) -> np.ndarray:
     """
     v = encode_text(text)
     for key, val in tags.items():
-        tag_vec = bind(_word_vec(key), _word_vec(val))
+        tag_vec = normalize(bind(_word_vec(key), _word_vec(val)))
         v = v + tag_vec * 0.1
     return normalize(v)
 

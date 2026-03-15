@@ -7,9 +7,13 @@ condensing, extracting rules, and enriching the knowledge graph.
 
 The user watches Claude work in a dedicated auto view. They can observe
 the stream, interrupt with /stop, or let it run to completion.
+
+v2: Reflection checkpoints, milestone tracking, quality gates,
+    full context recovery on compaction, state serialization.
 """
 
 import json
+import os
 import threading
 import time
 from typing import Optional, Callable
@@ -50,11 +54,60 @@ YOUR RULES:
 
 10. IF YOU HIT AN ERROR YOU CANNOT SOLVE, document it clearly and move to the next part of the goal. Come back to it after completing other steps — fresh perspective helps.
 
+REFLECTION PROTOCOL:
+Every 10 turns, pause and reflect:
+- What have I accomplished so far? (list completed milestones)
+- What is my current understanding of the problem?
+- What am I still confused about or uncertain of?
+- What should I investigate next and why?
+- Am I on the right track or should I pivot?
+
+QUALITY GATES:
+Before marking any step as complete, verify:
+- Does the implementation actually solve the stated problem?
+- Have I tested it with realistic inputs, not just toy examples?
+- Could this break something elsewhere in the system?
+- Is this the simplest correct solution?
+
 WHEN YOU HAVE COMPLETED THE ENTIRE GOAL with all tests passing, all code reviewed, and all commits made, output exactly: [AUTO_COMPLETE]
 
 GOAL: {goal}
 
 BEGIN."""
+
+# ── Milestone tracking ─────────────────────────────────────────────
+
+MILESTONE_STATE_FILE = os.path.expanduser("~/.one/auto_state.json")
+
+
+def _save_state(state: dict) -> None:
+    """Persist auto loop state to disk for crash recovery."""
+    try:
+        os.makedirs(os.path.dirname(MILESTONE_STATE_FILE), exist_ok=True)
+        with open(MILESTONE_STATE_FILE, "w") as f:
+            json.dump(state, f, indent=2)
+    except OSError:
+        pass
+
+
+def _load_state() -> Optional[dict]:
+    """Load persisted auto loop state."""
+    try:
+        if os.path.exists(MILESTONE_STATE_FILE):
+            with open(MILESTONE_STATE_FILE) as f:
+                return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def _clear_state() -> None:
+    """Remove persisted state after completion."""
+    try:
+        if os.path.exists(MILESTONE_STATE_FILE):
+            os.remove(MILESTONE_STATE_FILE)
+    except OSError:
+        pass
 
 
 class AutoLoop:
@@ -62,7 +115,14 @@ class AutoLoop:
 
     No turn limits. Handles context compaction, crash recovery, file-based
     goals, and continuous operation until the goal is genuinely complete.
+
+    v2 additions: reflection checkpoints, milestone tracking, quality gates,
+    full state serialization for crash recovery.
     """
+
+    REFLECTION_INTERVAL = 10  # Reflect every N turns
+    STALL_TIMEOUT = 300       # 5 minutes without response = stalled
+    MAX_CONSECUTIVE_ERRORS = 3
 
     def __init__(
         self,
@@ -88,12 +148,33 @@ class AutoLoop:
         self._consecutive_errors = 0
         self._context_compacted = False
 
+        # v2: Milestone tracking
+        self._milestones: list[dict] = []
+        self._current_step = 0
+        self._total_steps = 0
+        self._last_reflection_turn = 0
+        self._quality_checks_passed = 0
+        self._quality_checks_failed = 0
+
         self._gemma_queue: list[str] = []
         self._gemma_lock = threading.Lock()
 
     @property
     def running(self) -> bool:
         return self._running
+
+    @property
+    def progress(self) -> dict:
+        """Return current progress metrics."""
+        return {
+            "turn": self._turn_count,
+            "milestones": len(self._milestones),
+            "current_step": self._current_step,
+            "total_steps": self._total_steps,
+            "quality_passed": self._quality_checks_passed,
+            "quality_failed": self._quality_checks_failed,
+            "goal": self._goal[:100],
+        }
 
     def start(self, goal: str) -> None:
         """Launch autonomous mode. Accepts text goals or file paths."""
@@ -106,10 +187,22 @@ class AutoLoop:
         self._step_texts = []
         self._consecutive_errors = 0
         self._context_compacted = False
+        self._milestones = []
+        self._current_step = 0
+        self._total_steps = 0
+        self._last_reflection_turn = 0
+        self._quality_checks_passed = 0
+        self._quality_checks_failed = 0
 
         # Check if goal is a file path
         resolved_goal = self._resolve_goal(goal)
         self._goal = resolved_goal
+
+        # Check for crash recovery
+        saved_state = _load_state()
+        if saved_state and saved_state.get("goal") == resolved_goal[:200]:
+            self._recover_from_state(saved_state)
+            return
 
         self.on_status(f"auto: engaging — {resolved_goal[:60]}")
 
@@ -127,11 +220,15 @@ class AutoLoop:
         self.proxy.send(full_prompt)
         self._turn_count += 1
 
+        # Save initial state
+        self._persist_state()
+
         # Start watchdog for crash/timeout detection
         threading.Thread(target=self._watchdog, daemon=True).start()
 
     def stop(self) -> None:
         self._running = False
+        self._persist_state()
         self.on_status("auto: stopping after current response")
 
     def on_response_complete(self, text: str) -> None:
@@ -147,48 +244,190 @@ class AutoLoop:
         with self._gemma_lock:
             self._gemma_queue.append(text)
 
+        # Track milestones from Claude's output
+        self._extract_milestones(text)
+
         # Completion signal
         if "[AUTO_COMPLETE]" in text:
             self._running = False
-            self.on_status(f"auto: complete — {self._turn_count} turns")
+            self.on_status(f"auto: complete — {self._turn_count} turns, {len(self._milestones)} milestones")
             self.on_complete(f"Completed: {self._goal[:60]}")
             self._store_auto_session()
+            _clear_state()
             return
 
-        # Detect context compaction — Claude mentions losing context
-        if any(phrase in text.lower() for phrase in [
+        # Detect context compaction
+        compaction_phrases = [
             "context was compressed", "lost track", "can you remind me",
             "what were we working on", "i don't have access to previous",
-        ]):
+            "resuming from", "context window",
+        ]
+        if any(phrase in text.lower() for phrase in compaction_phrases):
             self._context_compacted = True
-            self.on_status("auto: context compacted — re-injecting goal")
+            self.on_status("auto: context compacted — re-injecting full state")
 
         self._turn_count += 1
-        self.on_status(f"auto: turn {self._turn_count}")
+        self.on_status(f"auto: turn {self._turn_count} | {len(self._milestones)} milestones")
+
+        # Persist state periodically
+        if self._turn_count % 5 == 0:
+            self._persist_state()
 
         # Build continuation prompt
         if self._context_compacted:
-            # Re-inject the goal and recent context after compaction
             self._context_compacted = False
-            context = self._build_context()
-            resume = (
-                f"CONTEXT WAS COMPACTED. Here is your goal again:\n\n"
-                f"GOAL: {self._goal[:2000]}\n\n"
-                f"{context}\n\n"
-                f"You were on turn {self._turn_count}. Review the current state of the codebase and resume where you left off. "
-                f"State which step you're resuming from."
-            )
-            self.proxy.send(resume)
+            self._send_full_recovery()
+        elif self._turn_count - self._last_reflection_turn >= self.REFLECTION_INTERVAL:
+            self._send_reflection_prompt()
         else:
             self.proxy.send("Continue. If the entire goal is complete with all tests passing, output [AUTO_COMPLETE].")
 
+    def _extract_milestones(self, text: str) -> None:
+        """Extract milestone markers from Claude's output."""
+        import re
+
+        # Look for step completion patterns
+        step_patterns = [
+            r'(?:completed?|finished?|done with)\s+(?:step|phase|part)\s+(\d+)',
+            r'step\s+(\d+)\s+(?:is\s+)?(?:complete|done|finished)',
+            r'✓\s+step\s+(\d+)',
+            r'moving to step\s+(\d+)',
+        ]
+
+        for pattern in step_patterns:
+            matches = re.findall(pattern, text, re.I)
+            for match in matches:
+                step_num = int(match)
+                self._current_step = max(self._current_step, step_num)
+                self._milestones.append({
+                    "step": step_num,
+                    "turn": self._turn_count,
+                    "summary": text[:200],
+                    "timestamp": time.time(),
+                })
+
+        # Look for total step count
+        total_match = re.search(r'(\d+)\s+(?:total\s+)?steps', text, re.I)
+        if total_match:
+            self._total_steps = max(self._total_steps, int(total_match.group(1)))
+
+        # Look for quality gate results
+        if any(phrase in text.lower() for phrase in ["tests pass", "all tests", "verified", "confirmed working"]):
+            self._quality_checks_passed += 1
+        if any(phrase in text.lower() for phrase in ["test failed", "tests fail", "broken", "error:"]):
+            self._quality_checks_failed += 1
+
+    def _send_reflection_prompt(self) -> None:
+        """Send a reflection checkpoint prompt."""
+        self._last_reflection_turn = self._turn_count
+
+        milestone_summary = ""
+        if self._milestones:
+            recent = self._milestones[-5:]
+            milestone_summary = "\n".join(
+                f"  - Turn {m['turn']}: Step {m['step']}"
+                for m in recent
+            )
+        else:
+            milestone_summary = "  (no milestones recorded yet)"
+
+        prompt = (
+            f"REFLECTION CHECKPOINT (turn {self._turn_count}):\n\n"
+            f"Goal: {self._goal[:500]}\n\n"
+            f"Recent milestones:\n{milestone_summary}\n\n"
+            f"Quality: {self._quality_checks_passed} passed, {self._quality_checks_failed} failed\n\n"
+            f"Pause and reflect:\n"
+            f"1. What have you accomplished so far?\n"
+            f"2. What is your current understanding?\n"
+            f"3. What are you uncertain about?\n"
+            f"4. What should you investigate next?\n"
+            f"5. Are you on track or should you pivot?\n\n"
+            f"After reflecting, continue working. If complete, output [AUTO_COMPLETE]."
+        )
+        self.proxy.send(prompt)
+
+    def _send_full_recovery(self) -> None:
+        """Send a complete state recovery after context compaction."""
+        context = self._build_context()
+
+        # Build milestone history
+        milestone_text = ""
+        if self._milestones:
+            milestone_text = "\n\nCOMPLETED MILESTONES:\n" + "\n".join(
+                f"  Turn {m['turn']}: Step {m['step']} — {m['summary'][:100]}"
+                for m in self._milestones
+            )
+
+        # Include recent step summaries
+        recent_steps = ""
+        if self._step_texts:
+            last_n = self._step_texts[-3:]
+            recent_steps = "\n\nLAST 3 RESPONSES (most recent):\n" + "\n---\n".join(
+                text[:500] for text in last_n
+            )
+
+        resume = (
+            f"CONTEXT WAS COMPACTED. Full state recovery:\n\n"
+            f"GOAL: {self._goal[:2000]}\n\n"
+            f"{context}\n"
+            f"{milestone_text}\n"
+            f"{recent_steps}\n\n"
+            f"You were on turn {self._turn_count}. "
+            f"Current progress: step {self._current_step}/{self._total_steps or '?'}. "
+            f"Quality: {self._quality_checks_passed} passed, {self._quality_checks_failed} failed.\n\n"
+            f"Review the current state and resume where you left off. "
+            f"State which step you're resuming from."
+        )
+        self.proxy.send(resume)
+
+    def _recover_from_state(self, state: dict) -> None:
+        """Recover from a previously saved state (crash recovery)."""
+        self._turn_count = state.get("turn_count", 0)
+        self._milestones = state.get("milestones", [])
+        self._current_step = state.get("current_step", 0)
+        self._total_steps = state.get("total_steps", 0)
+        self._quality_checks_passed = state.get("quality_passed", 0)
+        self._quality_checks_failed = state.get("quality_failed", 0)
+
+        self.on_status(f"auto: recovering from turn {self._turn_count}")
+
+        threading.Thread(target=self._gemma_background, daemon=True).start()
+
+        context = self._build_context()
+        resume = (
+            f"CRASH RECOVERY — resuming autonomous mode.\n\n"
+            f"GOAL: {self._goal[:2000]}\n\n"
+            f"{context}\n\n"
+            f"You were on turn {self._turn_count}, step {self._current_step}/{self._total_steps or '?'}. "
+            f"{len(self._milestones)} milestones completed. "
+            f"Review the codebase state and resume."
+        )
+
+        self._last_response_time = time.time()
+        self.proxy.send(resume)
+        self._turn_count += 1
+
+        threading.Thread(target=self._watchdog, daemon=True).start()
+
+    def _persist_state(self) -> None:
+        """Save current auto loop state to disk."""
+        state = {
+            "goal": self._goal[:200],
+            "turn_count": self._turn_count,
+            "milestones": self._milestones,
+            "current_step": self._current_step,
+            "total_steps": self._total_steps,
+            "quality_passed": self._quality_checks_passed,
+            "quality_failed": self._quality_checks_failed,
+            "project": self.project,
+            "timestamp": time.time(),
+        }
+        _save_state(state)
+
     def _resolve_goal(self, goal: str) -> str:
         """Resolve a goal — if it's a file path, read and use its contents."""
-        import os
-
         stripped = goal.strip()
 
-        # Check if it's a file path
         for path in [stripped, os.path.expanduser(stripped)]:
             if os.path.isfile(path):
                 try:
@@ -197,7 +436,7 @@ class AutoLoop:
                     self._goal_file = path
                     self.on_status(f"auto: loaded goal from {path}")
                     return content
-                except Exception:
+                except (OSError, UnicodeDecodeError):
                     pass
 
         return stripped
@@ -209,21 +448,23 @@ class AutoLoop:
 
             elapsed = time.time() - self._last_response_time
 
-            # If no response in 5 minutes, Claude might have crashed
-            if elapsed > 300:
+            if elapsed > self.STALL_TIMEOUT:
                 self._consecutive_errors += 1
                 self.on_status(f"auto: no response for {int(elapsed)}s — retry #{self._consecutive_errors}")
 
-                if self._consecutive_errors >= 3:
+                if self._consecutive_errors >= self.MAX_CONSECUTIVE_ERRORS:
                     self.on_status("auto: 3 consecutive timeouts — stopping")
                     self._running = False
+                    self._persist_state()
                     self._store_auto_session()
                     return
 
-                # Re-send continuation to unstick
+                # Re-send with state recovery
                 self.proxy.send(
-                    f"You appear to have stalled. Resume working on the goal: {self._goal[:500]}. "
-                    f"Check where you left off and continue."
+                    f"You appear to have stalled on turn {self._turn_count}. "
+                    f"Goal: {self._goal[:300]}. "
+                    f"Current step: {self._current_step}/{self._total_steps or '?'}. "
+                    f"Review the codebase state and continue."
                 )
                 self._last_response_time = time.time()
 
@@ -265,7 +506,19 @@ class AutoLoop:
             from . import store
             from .hdc import encode_tagged
 
-            summary = f"Auto goal: {self._goal}\nTurns: {self._turn_count}\nSteps: {len(self._step_texts)}"
+            # Build a richer summary
+            milestone_text = ""
+            if self._milestones:
+                milestone_text = " | Milestones: " + ", ".join(
+                    f"step {m['step']}" for m in self._milestones[-10:]
+                )
+
+            summary = (
+                f"Auto goal: {self._goal[:300]}\n"
+                f"Turns: {self._turn_count} | Steps: {len(self._step_texts)}"
+                f"{milestone_text}\n"
+                f"Quality: {self._quality_checks_passed} passed, {self._quality_checks_failed} failed"
+            )
             vec = encode_tagged(summary, role="auto")
             store.push_memory(
                 summary, "auto", "auto_session", "condensed", 0.95, vec.tolist(),
@@ -274,7 +527,6 @@ class AutoLoop:
         except Exception:
             pass
 
-        # Auto-generate a playbook from the completed session
         self._generate_playbook()
 
     def _generate_playbook(self) -> None:
@@ -289,6 +541,9 @@ class AutoLoop:
 
             completed = "[AUTO_COMPLETE]" in (self._accumulated_text or "")
             outcome = "completed successfully" if completed else f"stopped after {self._turn_count} turns"
+
+            # Include quality metrics in outcome
+            outcome += f" (quality: {self._quality_checks_passed}/{self._quality_checks_passed + self._quality_checks_failed} gates passed)"
 
             create_playbook(
                 project=self.project,

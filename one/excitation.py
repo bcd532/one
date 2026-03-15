@@ -28,9 +28,9 @@ def _user_profanity_density(text: str) -> float:
     words = text.lower().split()
     if not words:
         return 0.0
-    hits = sum(1 for w in words if any(p in w for p in [
-        "fuck", "shit", "damn", "hell", "holy", "omg", "wtf", "lmao",
-    ]))
+    profanity = {"fuck", "shit", "damn", "hell", "holy", "omg", "wtf", "lmao",
+                  "fucking", "shitty", "damned"}
+    hits = sum(1 for w in words if w in profanity)
     return min(1.0, hits / max(len(words), 1) * 5)
 
 
