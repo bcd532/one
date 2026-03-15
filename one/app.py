@@ -1357,10 +1357,11 @@ class OneApp(App):
     def _show_health(self) -> None:
         """Show knowledge graph health metrics."""
         try:
-            from .health import get_health_report
-            report = get_health_report(self.project)
+            from .health import HealthDashboard
+            dashboard = HealthDashboard(self.project)
+            report = dashboard.format_report()
             chat = self.query_one("#chat-scroll")
-            chat.mount(Static(report))
+            chat.mount(Static(f"[dim]{report}[/]"))
             chat.scroll_end(animate=False)
         except Exception as e:
             self._add_status(f"health error: {e}")
@@ -1368,13 +1369,15 @@ class OneApp(App):
     def _run_audit(self, flags: str) -> None:
         """Run knowledge quality audit."""
         try:
-            from .audit import run_full_audit
+            from .audit import AuditEngine
             auto_fix = "--fix" in flags
 
             def _do_audit():
                 try:
-                    result = run_full_audit(self.project, auto_fix=auto_fix)
-                    self.call_from_thread(self._add_status, f"audit complete: {result.get('overall_score', '?')}/100")
+                    engine = AuditEngine(self.project)
+                    result = engine.run_full_audit(auto_fix=auto_fix)
+                    score = result.get("overall_score", "?") if isinstance(result, dict) else "done"
+                    self.call_from_thread(self._add_status, f"audit complete: {score}")
                 except Exception as e:
                     self.call_from_thread(self._add_status, f"audit error: {e}")
 
