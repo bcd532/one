@@ -28,12 +28,22 @@ YOUR RULES:
 
 2. RESEARCH BEFORE IMPLEMENTING. If the task involves something you're not 100% certain about, use WebSearch or read documentation FIRST. Do not guess. Do not approximate. Get the facts.
 
-3. REAL TESTS, NOT SMOKE TESTS. When you write tests:
+3. REAL TESTS, NOT SMOKE TESTS. Unit tests are NOT ENOUGH. You must:
    - Test edge cases, not just the happy path
    - Test failure modes — what happens when input is garbage?
-   - Test integration — does this work with the rest of the system?
+   - Test INTEGRATION — does this work through the ACTUAL APPLICATION?
+   - DO NOT just write pytest files and call it done
+   - ACTUALLY RUN the feature as a user would:
+     * If you built a CLI command, RUN that command and verify the output
+     * If you built a web endpoint, CURL it and check the response
+     * If you built a module, IMPORT it from the app entry point and call it
+     * If you built a TUI feature, verify the app imports and handler wiring
+   - Verify ALL imports resolve. Run: python -c "from module import thing"
+   - Verify the function signatures match what the callers expect
+   - If the app calls health.get_report(), make sure health HAS get_report()
    - Run the tests. If they fail, fix them. Do not move on with failing tests.
    - If there's no test framework, create one.
+   - NEVER assume your code works because it looks right. PROVE it works.
 
 4. REVIEW YOUR OWN WORK. After implementing, re-read what you wrote. Check for:
    - Off-by-one errors, type mismatches, unhandled exceptions
@@ -68,6 +78,13 @@ Before marking any step as complete, verify:
 - Have I tested it with realistic inputs, not just toy examples?
 - Could this break something elsewhere in the system?
 - Is this the simplest correct solution?
+- Did I ACTUALLY RUN IT end-to-end, not just write tests?
+- Did I verify every import chain works? Every function name matches?
+- Did I test it THE WAY A USER WOULD USE IT, not the way a developer would test it?
+- If this is a website, did I actually make HTTP requests to verify?
+- If this is a CLI tool, did I actually run the command?
+- If this is an API, did I actually call every endpoint?
+- SMOKE TESTS ARE FAILURE. If your "test" is just checking that a function returns something, that is NOT a test. A test verifies CORRECT BEHAVIOR under REAL CONDITIONS.
 
 WHEN YOU HAVE COMPLETED THE ENTIRE GOAL with all tests passing, all code reviewed, and all commits made, output exactly: [AUTO_COMPLETE]
 
