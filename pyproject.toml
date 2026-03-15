@@ -10,10 +10,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-foundry = [
-    "orion_push_sdk==0.1.0",
-    "foundry_sdk_runtime",
-]
+foundry = ["orion_push_sdk==0.1.0", "foundry_sdk_runtime"]
+telegram = ["python-telegram-bot>=20.0", "httpx"]
+discord = ["discord.py>=2.0", "httpx"]
+slack = ["slack-bolt", "httpx"]
+remote = ["python-telegram-bot>=20.0", "discord.py>=2.0", "slack-bolt", "httpx"]
+all = ["python-telegram-bot>=20.0", "discord.py>=2.0", "slack-bolt", "httpx", "orion_push_sdk==0.1.0", "foundry_sdk_runtime"]
 
 [project.scripts]
 one = "one.cli:main"
