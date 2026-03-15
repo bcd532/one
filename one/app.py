@@ -1,11 +1,13 @@
 """Textual-based TUI application for One.
 
 Provides a rich terminal interface with streaming output rendering,
-tool call visualization, live memory recall, and background memory
-persistence via the configured storage backend.
+tool call visualization, live memory recall, background memory
+persistence, session tracking, and a collapsible information sidebar.
 """
 
 import json
+import os
+import re
 import time
 import threading
 from queue import Queue, Empty
@@ -13,15 +15,17 @@ from typing import Optional
 
 from textual import on, work
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.widgets import Header, Footer, Input, Static, RichLog, Rule
 from textual.containers import VerticalScroll, Horizontal, Vertical
 from textual.reactive import reactive
 from textual.timer import Timer
+from textual.message import Message
 from rich.text import Text
 from rich.panel import Panel
 from rich.markdown import Markdown
+from rich.syntax import Syntax
 from rich.console import Group
-from rich.spinner import Spinner
 
 from .proxy import ClaudeProxy
 
@@ -36,16 +40,109 @@ LOGO = """[bold cyan]
 RECALL_EVERY = 5
 
 
+# ── Custom widgets ───────────────────────────────────────────────
+
+
 class ChatMessage(Static):
+    """A single chat message displayed in the conversation stream."""
     pass
 
 
 class ToolBlock(Static):
+    """Visual representation of a tool invocation."""
     pass
 
 
 class ThinkingBlock(Static):
+    """Collapsible display for model thinking/reasoning output."""
     pass
+
+
+class HistoryInput(Input):
+    """Input widget with up/down arrow history navigation.
+
+    Maintains an ordered list of previously submitted messages.
+    Up arrow cycles backward through history, down arrow cycles forward.
+    Enter submits the current value and appends it to history.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._history: list[str] = []
+        self._history_index: int = -1
+        self._draft: str = ""
+
+    def add_to_history(self, text: str) -> None:
+        """Append a message to the input history, deduplicating consecutive repeats."""
+        if not text:
+            return
+        if self._history and self._history[-1] == text:
+            return
+        self._history.append(text)
+        self._history_index = -1
+        self._draft = ""
+
+    def _on_key(self, event) -> None:
+        if event.key == "up":
+            event.prevent_default()
+            event.stop()
+            if not self._history:
+                return
+            if self._history_index == -1:
+                self._draft = self.value
+                self._history_index = len(self._history) - 1
+            elif self._history_index > 0:
+                self._history_index -= 1
+            self.value = self._history[self._history_index]
+            self.cursor_position = len(self.value)
+        elif event.key == "down":
+            event.prevent_default()
+            event.stop()
+            if self._history_index == -1:
+                return
+            if self._history_index < len(self._history) - 1:
+                self._history_index += 1
+                self.value = self._history[self._history_index]
+            else:
+                self._history_index = -1
+                self.value = self._draft
+            self.cursor_position = len(self.value)
+
+
+class Sidebar(Vertical):
+    """Collapsible right-side panel showing project state at a glance.
+
+    Displays active rules, recent entities, memory count, current model,
+    and project name. Toggled via ctrl+b.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(id="sidebar", **kwargs)
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="sidebar-content")
+
+
+class Notification(Static):
+    """Single-line notification bar that auto-clears after a timeout."""
+
+    def __init__(self, **kwargs):
+        super().__init__("", id="notification", **kwargs)
+        self._clear_timer: Optional[Timer] = None
+
+    def show_message(self, text: str, duration: float = 3.0) -> None:
+        """Display a notification that auto-clears after duration seconds."""
+        self.update(text)
+        if self._clear_timer is not None:
+            self._clear_timer.stop()
+        self._clear_timer = self.set_timer(duration, self._clear)
+
+    def _clear(self) -> None:
+        self.update("")
+        self._clear_timer = None
+
+
+# ── Application ──────────────────────────────────────────────────
 
 
 class OneApp(App):
@@ -68,6 +165,11 @@ class OneApp(App):
         background: transparent;
     }
 
+    #chat-area {
+        height: 1fr;
+        background: transparent;
+    }
+
     #chat-scroll {
         height: 1fr;
         scrollbar-size: 1 1;
@@ -77,12 +179,37 @@ class OneApp(App):
         background: transparent;
     }
 
+    #sidebar {
+        dock: right;
+        width: 30;
+        background: transparent;
+        border-left: tall #333333;
+        padding: 1;
+        display: none;
+    }
+
+    .sidebar-visible #sidebar {
+        display: block;
+    }
+
+    #sidebar-content {
+        background: transparent;
+        width: 100%;
+    }
+
     #status-bar {
         dock: bottom;
         height: 1;
         background: transparent;
         color: #888888;
         padding: 0 2;
+    }
+
+    #notification {
+        dock: bottom;
+        height: 1;
+        background: transparent;
+        color: #00cccc;
     }
 
     #input-box {
@@ -140,6 +267,18 @@ class OneApp(App):
         background: transparent;
     }
 
+    .diff-add {
+        color: #00cc66;
+        padding: 0 0 0 3;
+        background: transparent;
+    }
+
+    .diff-del {
+        color: #cc4444;
+        padding: 0 0 0 3;
+        background: transparent;
+    }
+
     .cost-line {
         color: #666666;
         padding: 0 0 0 2;
@@ -159,15 +298,25 @@ class OneApp(App):
     VerticalScroll {
         background: transparent;
     }
+
+    Vertical {
+        background: transparent;
+    }
+
+    Horizontal {
+        background: transparent;
+    }
     """
 
     BINDINGS = [
-        ("escape", "quit", "Quit"),
-        ("ctrl+l", "clear_chat", "Clear"),
-        ("ctrl+r", "force_recall", "Recall"),
-        ("ctrl+e", "show_entities", "Entities"),
-        ("ctrl+u", "show_undo", "Undo"),
-        ("ctrl+t", "toggle_thinking", "Think"),
+        Binding("escape", "quit", "Quit"),
+        Binding("ctrl+l", "clear_chat", "Clear"),
+        Binding("ctrl+r", "force_recall", "Recall"),
+        Binding("ctrl+e", "show_entities", "Entities"),
+        Binding("ctrl+u", "show_undo", "Undo"),
+        Binding("ctrl+t", "toggle_thinking", "Think"),
+        Binding("ctrl+b", "toggle_sidebar", "Sidebar"),
+        Binding("ctrl+s", "export_session", "Export"),
     ]
 
     status_text: reactive[str] = reactive("ready")
@@ -216,10 +365,21 @@ class OneApp(App):
         self._last_injected_context: str = ""
         self._show_thinking: bool = True
 
+        self._sidebar_visible: bool = False
+        self._session_id: Optional[str] = None
+        self._memory_count: int = 0
+
+    # ── Layout ───────────────────────────────────────────────────
+
     def compose(self) -> ComposeResult:
-        yield VerticalScroll(id="chat-scroll")
+        yield Horizontal(
+            VerticalScroll(id="chat-scroll"),
+            Sidebar(),
+            id="chat-area",
+        )
         yield Static("", id="status-bar")
-        yield Input(placeholder="message one...", id="input-box")
+        yield Notification()
+        yield HistoryInput(placeholder="message one...", id="input-box")
 
     def on_mount(self) -> None:
         gemma_ok = False
@@ -239,7 +399,7 @@ class OneApp(App):
             f"    [bold cyan]one[/] [#666666]v0.1[/]  {f_tag}  {g_tag}  [#666666]model:{model}  project:{self.project}[/]"
         ))
         chat.mount(Static(
-            "    [#444444]esc:quit  ctrl+l:clear  ctrl+r:recall  /rules  /stats  /cost[/]\n"
+            "    [#444444]esc:quit  ctrl+l:clear  ctrl+r:recall  ctrl+b:sidebar  /rules  /stats  /cost[/]\n"
             "    [#444444]claude: /commit  /review  /compact  /help  — all pass through[/]"
         ))
         chat.mount(Rule())
@@ -249,9 +409,14 @@ class OneApp(App):
 
         threading.Thread(target=self._push_loop, daemon=True).start()
 
-        # Sync rules from Foundry to local cache (background, non-blocking)
         if self.foundry:
             threading.Thread(target=self._sync_rules, daemon=True).start()
+
+        # Session tracking
+        self._start_session()
+
+        # Initial sidebar state
+        self._refresh_sidebar()
 
         self.query_one("#input-box").focus()
 
@@ -267,7 +432,116 @@ class OneApp(App):
         except Exception:
             pass
 
-    # ── Input handling ──────────────────────────────────────────────
+    # ── Session tracking ─────────────────────────────────────────
+
+    def _start_session(self) -> None:
+        """Create a new session record for this conversation."""
+        try:
+            from .sessions import create_session
+            model = self.proxy.model or "opus"
+            self._session_id = create_session(self.project, model)
+        except Exception:
+            self._session_id = None
+
+    def _session_add_message(self, role: str, content: str) -> None:
+        """Record a message in the active session."""
+        if not self._session_id:
+            return
+        try:
+            from .sessions import add_message
+            add_message(self._session_id, role, content, self._turn_counter)
+        except Exception:
+            pass
+
+    def _session_end(self) -> None:
+        """Finalize the active session with cost data."""
+        if not self._session_id:
+            return
+        try:
+            from .sessions import end_session
+            end_session(self._session_id, self._total_cost)
+        except Exception:
+            pass
+
+    # ── Sidebar ──────────────────────────────────────────────────
+
+    def _refresh_sidebar(self) -> None:
+        """Update the sidebar content with current project state."""
+        try:
+            content = self.query_one("#sidebar-content", Static)
+        except Exception:
+            return
+
+        model = self.proxy.model or "opus"
+        lines = [
+            f"[bold cyan]{self.project}[/]",
+            f"[dim]model: {model}[/]",
+            "",
+        ]
+
+        # Memory count
+        try:
+            s = self.backend.stats()
+            mem_count = s.get("memories", s.get("total_memories", "?"))
+            self._memory_count = mem_count if isinstance(mem_count, int) else 0
+            lines.append(f"[bold]memories[/] {mem_count}")
+        except Exception:
+            lines.append(f"[bold]memories[/] --")
+
+        lines.append("")
+
+        # Active rules
+        try:
+            from .rules import get_all_rules
+            rules = get_all_rules(self.project)
+            count = len(rules)
+            lines.append(f"[bold]rules[/] ({count})")
+            for r in rules[:3]:
+                text = r["rule_text"]
+                if len(text) > 24:
+                    text = text[:21] + "..."
+                lines.append(f"  [dim]{text}[/]")
+            if count > 3:
+                lines.append(f"  [dim]+{count - 3} more[/]")
+        except Exception:
+            lines.append("[bold]rules[/] --")
+
+        lines.append("")
+
+        # Recent entities
+        try:
+            from . import store
+            ents = store.get_entities(limit=5)
+            lines.append(f"[bold]entities[/] ({len(ents)})")
+            for e in ents:
+                name = e.get("name", "?")
+                count = e.get("observation_count", 0)
+                if len(name) > 20:
+                    name = name[:17] + "..."
+                lines.append(f"  [yellow]{name}[/] [dim]{count}x[/]")
+        except Exception:
+            lines.append("[bold]entities[/] --")
+
+        lines.append("")
+
+        # Connection status
+        connected = self.proxy.alive
+        conn_tag = "[green]connected[/]" if connected else "[red]disconnected[/]"
+        lines.append(conn_tag)
+
+        content.update("\n".join(lines))
+
+    # ── Notifications ────────────────────────────────────────────
+
+    def _notify(self, text: str, duration: float = 3.0) -> None:
+        """Show a brief notification that auto-fades."""
+        try:
+            notif = self.query_one("#notification", Notification)
+            notif.show_message(text, duration)
+        except Exception:
+            pass
+
+    # ── Input handling ───────────────────────────────────────────
 
     @on(Input.Submitted, "#input-box")
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -276,11 +550,14 @@ class OneApp(App):
             return
 
         event.input.value = ""
+        input_widget = self.query_one("#input-box", HistoryInput)
+        input_widget.add_to_history(text)
 
         ONE_COMMANDS = {
             "/quit", "/exit", "/q", "/clear", "/cost", "/recall",
             "/rules", "/stats", "/entities", "/search", "/undo",
             "/context", "/forget", "/help", "/think",
+            "/sessions", "/session", "/export",
         }
 
         if text in ("/quit", "/exit", "/q"):
@@ -316,6 +593,15 @@ class OneApp(App):
         if text == "/help":
             self._show_help()
             return
+        if text == "/sessions":
+            self._show_sessions()
+            return
+        if text == "/export":
+            self.action_export_session()
+            return
+        if text.startswith("/session "):
+            self._show_session_messages(text[9:].strip())
+            return
         if text.startswith("/search "):
             self._search_memories(text[8:].strip())
             return
@@ -339,15 +625,14 @@ class OneApp(App):
         if len(self._recent_texts) > 5:
             self._recent_texts = self._recent_texts[-5:]
 
-        # Show message and start timer IMMEDIATELY
         chat = self.query_one("#chat-scroll")
         chat.mount(ChatMessage(f"[bold]{text}[/]", classes="user-msg"))
         chat.scroll_end(animate=False)
         self._timer_start = time.time()
         self._start_timer()
         self._capture("user", text)
+        self._session_add_message("user", text)
 
-        # All recall + send happens in background — UI never blocks
         threading.Thread(
             target=self._recall_and_send,
             args=(text,),
@@ -367,11 +652,11 @@ class OneApp(App):
             try:
                 enriched = future.result(timeout=5)
             except (concurrent.futures.TimeoutError, Exception):
-                enriched = text  # skip recall, send raw
+                enriched = text
 
         self.proxy.send(enriched)
 
-    # ── Timer ───────────────────────────────────────────────────────
+    # ── Timer ────────────────────────────────────────────────────
 
     def _start_timer(self) -> None:
         self.status_text = "thinking..."
@@ -398,14 +683,39 @@ class OneApp(App):
         try:
             bar = self.query_one("#status-bar", Static)
             f = "[green]●[/]" if self.foundry else "[#666666]○[/]"
+            model = self.proxy.model or "opus"
             cost = f"[#666666]${self._total_cost:.4f}[/]" if self._total_cost > 0 else ""
             turns = f"[#666666]{self._total_turns}t[/]" if self._total_turns > 0 else ""
-            parts = [f"  {f}", self.status_text, cost, turns]
+            conn_tag = "[green]●[/]" if self.proxy.alive else "[red]●[/]"
+
+            rules_count = ""
+            try:
+                from .rules import get_all_rules
+                rc = len(get_all_rules(self.project))
+                if rc > 0:
+                    rules_count = f"[#666666]{rc}r[/]"
+            except Exception:
+                pass
+
+            mem_tag = ""
+            if self._memory_count:
+                mem_tag = f"[#666666]{self._memory_count}m[/]"
+
+            parts = [
+                f"  {f} [dim]{self.project}[/]",
+                f"[dim]{model}[/]",
+                self.status_text,
+                mem_tag,
+                rules_count,
+                cost,
+                turns,
+                conn_tag,
+            ]
             bar.update("  ".join(p for p in parts if p))
         except Exception:
             pass
 
-    # ── Proxy events ────────────────────────────────────────────────
+    # ── Proxy events ─────────────────────────────────────────────
 
     def _on_proxy_event(self, event: dict) -> None:
         """Route proxy events from the reader thread to the main thread."""
@@ -426,7 +736,7 @@ class OneApp(App):
         elif t == "result":
             self._handle_result(event)
 
-    # ── Stream rendering ────────────────────────────────────────────
+    # ── Stream rendering ─────────────────────────────────────────
 
     def _handle_stream(self, ev: dict) -> None:
         t = ev.get("type", "")
@@ -496,7 +806,7 @@ class OneApp(App):
                     summary = lines[0][:80] if lines else ""
                     count = len(self._thinking_text)
                     self._active_thinking.update(
-                        f"[dim]💭 {summary}{'...' if len(lines[0]) > 80 else ''} ({count} chars)[/]"
+                        f"[dim]thought: {summary}{'...' if len(lines[0]) > 80 else ''} ({count} chars)[/]"
                     )
                 self._active_thinking = None
 
@@ -504,6 +814,7 @@ class OneApp(App):
                 self._in_text = False
                 self._active_response = None
                 self._capture("assistant", self._response_text)
+                self._session_add_message("assistant", self._response_text)
 
             elif self._in_tool_input:
                 self._in_tool_input = False
@@ -519,11 +830,11 @@ class OneApp(App):
         d = inp if isinstance(inp, dict) else {}
 
         icons = {
-            "Bash": "⚡", "Write": "✏", "Edit": "✏", "Read": "📄",
-            "Glob": "🔍", "Grep": "🔍", "WebSearch": "🌐", "WebFetch": "🌐",
-            "Agent": "🤖", "Skill": "⚙",
+            "Bash": ">>", "Write": "::", "Edit": "::", "Read": "->",
+            "Glob": "??", "Grep": "??", "WebSearch": "~~", "WebFetch": "~~",
+            "Agent": "<>", "Skill": "--",
         }
-        icon = icons.get(tool, "🔧")
+        icon = icons.get(tool, ">|")
 
         if tool == "Bash":
             cmd = d.get("command", str(inp))
@@ -554,7 +865,7 @@ class OneApp(App):
         elif tool == "Agent":
             desc = d.get("description", "")
             at = d.get("subagent_type", "")
-            block = ToolBlock(f"{icon} [bold cyan]Agent[/] [dim]{at} — {desc}[/]", classes="tool-block")
+            block = ToolBlock(f"{icon} [bold cyan]Agent[/] [dim]{at} -- {desc}[/]", classes="tool-block")
         else:
             block = ToolBlock(f"{icon} [bold]{tool}[/]", classes="tool-block")
 
@@ -577,7 +888,39 @@ class OneApp(App):
 
         self._capture("tool_use", json.dumps({"tool": tool, "input": inp}))
 
-    # ── Tool results ────────────────────────────────────────────────
+    # ── Diff rendering ───────────────────────────────────────────
+
+    def _render_diff(self, text: str, chat) -> bool:
+        """Detect and render unified diff content with red/green highlighting.
+
+        Returns True if the text was recognized and rendered as a diff,
+        False otherwise.
+        """
+        diff_pattern = re.compile(
+            r'^(?:---|\+\+\+|@@\s)',
+            re.MULTILINE,
+        )
+        if not diff_pattern.search(text):
+            return False
+
+        lines = text.split("\n")
+        rendered_parts = []
+        for line in lines:
+            if line.startswith("+++") or line.startswith("---"):
+                rendered_parts.append(f"[bold]{line}[/]")
+            elif line.startswith("@@"):
+                rendered_parts.append(f"[cyan]{line}[/]")
+            elif line.startswith("+"):
+                rendered_parts.append(f"[green]{line}[/]")
+            elif line.startswith("-"):
+                rendered_parts.append(f"[red]{line}[/]")
+            else:
+                rendered_parts.append(f"[dim]{line}[/]")
+
+        chat.mount(Static("\n".join(rendered_parts), classes="tool-result"))
+        return True
+
+    # ── Tool results ─────────────────────────────────────────────
 
     def _handle_assistant(self, event: dict) -> None:
         pass
@@ -600,17 +943,19 @@ class OneApp(App):
             is_err = block.get("is_error", False)
 
             if "requested permissions" in txt.lower() or "haven't granted" in txt.lower():
-                chat.mount(Static(f"  [red bold]✗ denied[/] [dim]{txt[:100]}[/]", classes="tool-result"))
+                chat.mount(Static(f"  [red bold]x denied[/] [dim]{txt[:100]}[/]", classes="tool-result"))
             elif is_err:
                 display = txt[:200] + "..." if len(txt) > 200 else txt
-                chat.mount(Static(f"  [red]✗[/] {display}", classes="tool-result"))
+                chat.mount(Static(f"  [red]x[/] {display}", classes="tool-result"))
             else:
-                chat.mount(Static(f"  [green]✓[/]", classes="tool-result"))
+                # Attempt diff rendering for file changes
+                if not self._render_diff(txt, chat):
+                    chat.mount(Static(f"  [green]ok[/]", classes="tool-result"))
 
             chat.scroll_end(animate=False)
             self._capture("tool_result", txt)
 
-    # ── Result ──────────────────────────────────────────────────────
+    # ── Result ───────────────────────────────────────────────────
 
     def _handle_result(self, event: dict) -> None:
         self._stop_timer()
@@ -624,20 +969,31 @@ class OneApp(App):
         t = "turn" if turns == 1 else "turns"
         chat = self.query_one("#chat-scroll")
         chat.mount(Static(
-            f"[dim]${cost:.4f} · {duration / 1000:.1f}s · {turns} {t}[/]",
+            f"[dim]${cost:.4f} -- {duration / 1000:.1f}s -- {turns} {t}[/]",
             classes="cost-line",
         ))
         chat.mount(Rule())
         chat.scroll_end(animate=False)
 
-        self.status_text = f"ready · ${self._total_cost:.4f}"
+        self.status_text = f"ready -- ${self._total_cost:.4f}"
         self._update_status()
 
         self._active_tool = None
         self._current_tool = None
         self._turn_complete.set()
 
-    # ── Actions ─────────────────────────────────────────────────────
+        # Update session turn count
+        if self._session_id:
+            try:
+                from .sessions import add_message
+                # Turn count is tracked via add_message calls; no extra update needed.
+            except Exception:
+                pass
+
+        # Refresh sidebar after each completed turn
+        self._refresh_sidebar()
+
+    # ── Actions ──────────────────────────────────────────────────
 
     def action_clear_chat(self) -> None:
         chat = self.query_one("#chat-scroll")
@@ -646,6 +1002,7 @@ class OneApp(App):
         chat.mount(Rule())
 
     def action_quit(self) -> None:
+        self._session_end()
         self.proxy.stop()
         self.exit()
 
@@ -668,13 +1025,12 @@ class OneApp(App):
                 count = e.get("observation_count", 0)
                 etype = e.get("type", "?")
                 name = e.get("name", "?")
-                bar = "█" * min(20, count)
+                bar = "|" * min(20, count)
                 lines.append(f"  [yellow]{etype:8s}[/] {name} [dim]{bar} {count}x[/]")
 
-                # Show related entities
                 related = store.get_related_entities(name, limit=3)
                 for r in related:
-                    lines.append(f"             [dim]↔ {r['name']} ({r['shared_memories']} shared)[/]")
+                    lines.append(f"             [dim]<-> {r['name']} ({r['shared_memories']} shared)[/]")
 
             chat.mount(Static("\n".join(lines)))
             chat.scroll_end(animate=False)
@@ -682,7 +1038,7 @@ class OneApp(App):
             self._add_status(f"entities error: {e}")
 
     def action_show_undo(self) -> None:
-        """Show recent git changes — what Claude just did to the codebase."""
+        """Show recent git changes -- what Claude just did to the codebase."""
         import subprocess
         try:
             result = subprocess.run(
@@ -694,7 +1050,6 @@ class OneApp(App):
             if result.returncode == 0 and result.stdout.strip():
                 chat.mount(Static(f"[cyan bold]recent changes[/]\n[dim]{result.stdout.strip()}[/]"))
             else:
-                # Try unstaged changes
                 result2 = subprocess.run(
                     ["git", "diff", "--stat"],
                     capture_output=True, text=True, timeout=5,
@@ -713,6 +1068,34 @@ class OneApp(App):
         self._show_thinking = not self._show_thinking
         state = "on" if self._show_thinking else "off"
         self._add_status(f"thinking display: {state}")
+
+    def action_toggle_sidebar(self) -> None:
+        """Toggle the information sidebar visibility."""
+        self._sidebar_visible = not self._sidebar_visible
+        if self._sidebar_visible:
+            self.add_class("sidebar-visible")
+            self._refresh_sidebar()
+        else:
+            self.remove_class("sidebar-visible")
+
+    def action_export_session(self) -> None:
+        """Export the current session as a markdown file."""
+        if not self._session_id:
+            self._add_status("no active session")
+            return
+        try:
+            from .sessions import export_session_markdown
+            md = export_session_markdown(self._session_id)
+            export_dir = os.path.expanduser("~/.one/exports")
+            os.makedirs(export_dir, exist_ok=True)
+            filename = f"session-{self._session_id[:8]}.md"
+            filepath = os.path.join(export_dir, filename)
+            with open(filepath, "w") as f:
+                f.write(md)
+            self._add_status(f"exported to {filepath}")
+            self._notify(f"session exported: {filename}")
+        except Exception as e:
+            self._add_status(f"export error: {e}")
 
     def _show_last_context(self) -> None:
         """Show what context was injected on the last recall."""
@@ -765,6 +1148,7 @@ class OneApp(App):
                 conn.execute("UPDATE rule_nodes SET active=0 WHERE id=?", (m["id"],))
             conn.commit()
             self._add_status(f"deactivated {len(matches)} rule(s)")
+            self._refresh_sidebar()
         except Exception as e:
             self._add_status(f"forget error: {e}")
 
@@ -773,27 +1157,32 @@ class OneApp(App):
         chat = self.query_one("#chat-scroll")
         lines = [
             "[cyan bold]one commands[/]",
-            "  [yellow]/clear[/]         clear the screen",
-            "  [yellow]/cost[/]          session cost and turn count",
-            "  [yellow]/recall[/]        force memory recall",
-            "  [yellow]/rules[/]         show the rule tree",
-            "  [yellow]/rule <text>[/]   add a manual rule",
-            "  [yellow]/forget <text>[/] deactivate a rule by text match",
-            "  [yellow]/stats[/]         memory store statistics",
-            "  [yellow]/entities[/]      show the knowledge graph",
-            "  [yellow]/search <q>[/]    search memories",
-            "  [yellow]/context[/]       show last injected context",
-            "  [yellow]/undo[/]          show recent git changes",
-            "  [yellow]/think[/]         toggle thinking block visibility",
-            "  [yellow]/help[/]          this help",
+            "  [yellow]/clear[/]           clear the screen",
+            "  [yellow]/cost[/]            session cost and turn count",
+            "  [yellow]/recall[/]          force memory recall",
+            "  [yellow]/rules[/]           show the rule tree",
+            "  [yellow]/rule <text>[/]     add a manual rule",
+            "  [yellow]/forget <text>[/]   deactivate a rule by text match",
+            "  [yellow]/stats[/]           memory store statistics",
+            "  [yellow]/entities[/]        show the knowledge graph",
+            "  [yellow]/search <q>[/]      search memories",
+            "  [yellow]/context[/]         show last injected context",
+            "  [yellow]/undo[/]            show recent git changes",
+            "  [yellow]/think[/]           toggle thinking block visibility",
+            "  [yellow]/sessions[/]        list past sessions",
+            "  [yellow]/session <id>[/]    show session messages",
+            "  [yellow]/export[/]          export current session as markdown",
+            "  [yellow]/help[/]            this help",
             "",
             "[cyan bold]keybindings[/]",
-            "  [yellow]ctrl+l[/]         clear screen",
-            "  [yellow]ctrl+r[/]         force recall",
-            "  [yellow]ctrl+e[/]         show entities",
-            "  [yellow]ctrl+u[/]         show git changes",
-            "  [yellow]ctrl+t[/]         toggle thinking",
-            "  [yellow]esc[/]            quit",
+            "  [yellow]ctrl+l[/]           clear screen",
+            "  [yellow]ctrl+r[/]           force recall",
+            "  [yellow]ctrl+e[/]           show entities",
+            "  [yellow]ctrl+u[/]           show git changes",
+            "  [yellow]ctrl+t[/]           toggle thinking",
+            "  [yellow]ctrl+b[/]           toggle sidebar",
+            "  [yellow]ctrl+s[/]           export session",
+            "  [yellow]esc[/]              quit",
             "",
             "[cyan bold]claude commands[/] (pass through)",
             "  [dim]/commit  /review  /compact  /help  /usage  etc.[/]",
@@ -801,12 +1190,74 @@ class OneApp(App):
         chat.mount(Static("\n".join(lines)))
         chat.scroll_end(animate=False)
 
+    def _show_sessions(self) -> None:
+        """Display recent sessions."""
+        try:
+            from .sessions import list_sessions
+            sessions = list_sessions(project=self.project, limit=15)
+            chat = self.query_one("#chat-scroll")
+            if not sessions:
+                chat.mount(Static("  [dim]no sessions found[/]"))
+                chat.scroll_end(animate=False)
+                return
+
+            lines = [f"[cyan bold]sessions[/] ({len(sessions)})"]
+            for s in sessions:
+                sid = s["id"][:8]
+                model = s.get("model", "?")
+                turns = s.get("turn_count", 0)
+                cost = s.get("total_cost", 0.0)
+                start = s.get("start_time", "?")
+                if isinstance(start, str) and len(start) > 16:
+                    start = start[:16]
+                active = " [green]*[/]" if self._session_id and s["id"] == self._session_id else ""
+                lines.append(
+                    f"  [yellow]{sid}[/] {start} [dim]{model} {turns}t ${cost:.4f}[/]{active}"
+                )
+            chat.mount(Static("\n".join(lines)))
+            chat.scroll_end(animate=False)
+        except Exception as e:
+            self._add_status(f"sessions error: {e}")
+
+    def _show_session_messages(self, session_id_prefix: str) -> None:
+        """Display messages from a session by ID prefix."""
+        try:
+            from .sessions import list_sessions, get_session_messages
+            sessions = list_sessions(limit=100)
+
+            match = None
+            for s in sessions:
+                if s["id"].startswith(session_id_prefix):
+                    match = s
+                    break
+
+            if not match:
+                self._add_status(f"no session matching '{session_id_prefix}'")
+                return
+
+            messages = get_session_messages(match["id"], limit=50)
+            chat = self.query_one("#chat-scroll")
+            sid = match["id"][:8]
+            lines = [f"[cyan bold]session {sid}[/] ({len(messages)} messages)"]
+            for msg in messages:
+                role = msg.get("role", "?")
+                content = msg.get("content", "")
+                if len(content) > 120:
+                    content = content[:117] + "..."
+                turn = msg.get("turn_number", "?")
+                role_color = "green" if role == "user" else "blue" if role == "assistant" else "yellow"
+                lines.append(f"  [{role_color}]{role}[/] [dim]t{turn}[/] {content}")
+            chat.mount(Static("\n".join(lines)))
+            chat.scroll_end(animate=False)
+        except Exception as e:
+            self._add_status(f"session error: {e}")
+
     def _add_status(self, text: str) -> None:
         chat = self.query_one("#chat-scroll")
         chat.mount(Static(f"  [dim]{text}[/]"))
         chat.scroll_end(animate=False)
 
-    # ── Live recall ─────────────────────────────────────────────────
+    # ── Live recall ──────────────────────────────────────────────
 
     def _get_ctx_tracker(self):
         if self._ctx_tracker is None:
@@ -834,14 +1285,14 @@ class OneApp(App):
             if self._preloaded_context:
                 parts.append(self._preloaded_context)
                 self._preloaded_context = None
-                self._add_status("↻ recalled (preloaded)")
+                self.call_from_thread(self._add_status, "recalled (preloaded)")
             else:
                 query = " ".join(self._recent_texts[-3:])
                 context_block = self._do_recall(query, use_gemma=False)
                 if context_block:
                     parts.append(context_block)
                     reason = "start" if first_msg else ("shift" if shifted else f"t{self._turn_counter}")
-                    self._add_status(f"↻ recalled ({reason})")
+                    self.call_from_thread(self._add_status, f"recalled ({reason})")
 
                 if shifted or periodic:
                     threading.Thread(
@@ -879,6 +1330,9 @@ class OneApp(App):
             result = self._do_recall(query, use_gemma=True)
             if result:
                 self._preloaded_context = result
+                self.call_from_thread(
+                    self._notify, "gemma context preloaded"
+                )
         except Exception:
             pass
 
@@ -897,7 +1351,6 @@ class OneApp(App):
             chat.scroll_end(animate=False)
             return
 
-        # Build tree display
         children_of: dict[Optional[int], list[dict]] = {}
         for r in rules:
             children_of.setdefault(r["parent_id"], []).append(r)
@@ -910,7 +1363,7 @@ class OneApp(App):
                 kw = node["activation_keywords"]
                 conf = node["confidence"]
                 count = node["source_count"]
-                tag = f"[green]●[/]" if kw == "*" else f"[yellow]◐[/] [dim]{kw}[/]"
+                tag = f"[green]*[/]" if kw == "*" else f"[yellow]~[/] [dim]{kw}[/]"
                 lines.append(f"  {prefix}{tag} {node['rule_text']} [dim][{conf:.0%}, {count}x][/]")
                 _tree(node["id"], indent + 1)
 
@@ -944,6 +1397,7 @@ class OneApp(App):
             from .rules import add_rule
             rid = add_rule(self.project, text, activation_keywords="*", confidence=0.9, source_count=1)
             self._add_status(f"rule #{rid} added")
+            self._refresh_sidebar()
         except Exception as e:
             self._add_status(f"rule failed: {e}")
 
@@ -974,7 +1428,7 @@ class OneApp(App):
         except Exception:
             return []
 
-    # ── Background memory persistence ───────────────────────────────
+    # ── Background memory persistence ────────────────────────────
 
     def _capture(self, role: str, content: str, label: str = "") -> None:
         if content and content.strip():
@@ -1028,11 +1482,14 @@ class OneApp(App):
                     self._condense_thread(_topic_buffer[:-1])
                     _topic_buffer = [_topic_buffer[-1]]
 
-                # Rule learning — high-confidence decisions become rules
+                # Rule learning -- high-confidence decisions become rules
                 if confidence > 0.7 and role == "user":
                     try:
                         from .rules import learn_rule_from_memory
                         learn_rule_from_memory(self.project, content, confidence)
+                        self.call_from_thread(
+                            self._notify, "rule learned from conversation"
+                        )
                     except Exception:
                         pass
 
@@ -1060,6 +1517,10 @@ class OneApp(App):
                 regime_tag="condensed",
                 aif_confidence=0.9,
                 hdc_vector=vec.tolist(),
+            )
+
+            self.call_from_thread(
+                self._notify, "topic condensed"
             )
         except Exception:
             pass
