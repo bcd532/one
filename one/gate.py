@@ -261,8 +261,6 @@ class AifGate:
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 return pool.submit(_query).result(timeout=3)
-        except (concurrent.futures.TimeoutError, Exception):
-            return None
         except Exception:
             return None
 
