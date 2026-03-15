@@ -207,7 +207,9 @@ class OneApp(App):
         self._timer_handle: Optional[Timer] = None
 
         self._ctx_tracker = None
-        self._preloaded_context: Optional[str] = None  # Gemma result ready for next msg
+        self._preloaded_context: Optional[str] = None
+        self._recent_files: list[str] = []
+        self._recent_tools: list[str] = []
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="chat-scroll")
@@ -264,6 +266,12 @@ class OneApp(App):
             return
         if text == "/recall":
             self._force_recall()
+            return
+        if text == "/rules":
+            self._show_rules()
+            return
+        if text.startswith("/rule "):
+            self._add_manual_rule(text[6:].strip())
             return
 
         self._send_message(text)
@@ -493,6 +501,20 @@ class OneApp(App):
         chat.mount(block)
         self._active_tool = block
         chat.scroll_end(animate=False)
+
+        # Track recent tools and files for rule activation
+        if tool not in self._recent_tools:
+            self._recent_tools.append(tool)
+            if len(self._recent_tools) > 10:
+                self._recent_tools = self._recent_tools[-10:]
+        for key in ("file_path", "path"):
+            if key in d and isinstance(d[key], str):
+                fp = d[key]
+                if fp not in self._recent_files:
+                    self._recent_files.append(fp)
+                    if len(self._recent_files) > 10:
+                        self._recent_files = self._recent_files[-10:]
+
         self._capture("tool_use", json.dumps({"tool": tool, "input": inp}))
 
     # ── Tool results ────────────────────────────────────────────────
@@ -584,41 +606,61 @@ class OneApp(App):
         return self._ctx_tracker
 
     def _maybe_recall(self, text: str) -> str:
-        """Inject recalled context when appropriate. Never blocks on Gemma."""
+        """Inject active rules + recalled context. Rules inject every turn."""
         ctx = self._get_ctx_tracker()
         ctx.encode(text, source="user")
         shifted = ctx.shifted
         first_msg = self._turn_counter == 1
         periodic = (self._turn_counter % RECALL_EVERY == 0) and self._turn_counter > 1
 
-        if not first_msg and not shifted and not periodic:
+        parts = []
+
+        # Rules inject EVERY turn based on current context
+        rules_block = self._get_active_rules(text)
+        if rules_block:
+            parts.append(rules_block)
+
+        # Memory recall on first msg, topic shift, or periodic
+        if first_msg or shifted or periodic:
+            if self._preloaded_context:
+                parts.append(self._preloaded_context)
+                self._preloaded_context = None
+                self._add_status("↻ recalled (preloaded)")
+            else:
+                query = " ".join(self._recent_texts[-3:])
+                context_block = self._do_recall(query, use_gemma=False)
+                if context_block:
+                    parts.append(context_block)
+                    reason = "start" if first_msg else ("shift" if shifted else f"t{self._turn_counter}")
+                    self._add_status(f"↻ recalled ({reason})")
+
+                if shifted or periodic:
+                    threading.Thread(
+                        target=self._preload_gemma_context,
+                        args=(query,),
+                        daemon=True,
+                    ).start()
+
+        if not parts:
             return text
 
-        # If Gemma preloaded a condensed context from last turn, use it
-        if self._preloaded_context:
-            context_block = self._preloaded_context
-            self._preloaded_context = None
-            self._add_status("↻ recalled (preloaded)")
-            return f"{context_block}\n\n{text}"
+        return "\n\n".join(parts) + "\n\n" + text
 
-        # Otherwise fast raw recall (no Gemma, no blocking)
-        query = " ".join(self._recent_texts[-3:])
-        context_block = self._do_recall(query, use_gemma=False)
-        if not context_block:
-            return text
-
-        reason = "start" if first_msg else ("topic shift" if shifted else f"turn {self._turn_counter}")
-        self._add_status(f"↻ recalled ({reason})")
-
-        # Kick off Gemma in background for NEXT recall
-        if shifted or periodic:
-            threading.Thread(
-                target=self._preload_gemma_context,
-                args=(query,),
-                daemon=True,
-            ).start()
-
-        return f"{context_block}\n\n{text}"
+    def _get_active_rules(self, text: str) -> str:
+        """Get contextually active rules for the current turn."""
+        try:
+            from .rules import get_active_rules, format_rules_for_injection
+            rules = get_active_rules(
+                self.project,
+                current_text=text,
+                recent_files=self._recent_files,
+                recent_tools=self._recent_tools,
+            )
+            if rules:
+                return format_rules_for_injection(rules, self.project)
+        except Exception:
+            pass
+        return ""
 
     def _preload_gemma_context(self, query: str) -> None:
         """Background: run Gemma condensation and cache result for next message."""
@@ -628,6 +670,53 @@ class OneApp(App):
                 self._preloaded_context = result
         except Exception:
             pass
+
+    def _show_rules(self) -> None:
+        """Display the rule tree for the current project."""
+        try:
+            from .rules import get_all_rules
+            rules = get_all_rules(self.project)
+        except Exception:
+            rules = []
+
+        chat = self.query_one("#chat-scroll")
+
+        if not rules:
+            chat.mount(Static(f"  [dim]no rules for {self.project}[/]"))
+            chat.scroll_end(animate=False)
+            return
+
+        # Build tree display
+        children_of: dict[Optional[int], list[dict]] = {}
+        for r in rules:
+            children_of.setdefault(r["parent_id"], []).append(r)
+
+        lines = [f"[cyan bold]rules for {self.project}[/] ({len(rules)} active)"]
+
+        def _tree(parent_id, indent=0):
+            for node in children_of.get(parent_id, []):
+                prefix = "  " * indent
+                kw = node["activation_keywords"]
+                conf = node["confidence"]
+                count = node["source_count"]
+                tag = f"[green]●[/]" if kw == "*" else f"[yellow]◐[/] [dim]{kw}[/]"
+                lines.append(f"  {prefix}{tag} {node['rule_text']} [dim][{conf:.0%}, {count}x][/]")
+                _tree(node["id"], indent + 1)
+
+        _tree(None)
+        chat.mount(Static("\n".join(lines)))
+        chat.scroll_end(animate=False)
+
+    def _add_manual_rule(self, text: str) -> None:
+        """Manually add a rule via /rule command."""
+        if not text:
+            return
+        try:
+            from .rules import add_rule
+            rid = add_rule(self.project, text, activation_keywords="*", confidence=0.9, source_count=1)
+            self._add_status(f"rule #{rid} added")
+        except Exception as e:
+            self._add_status(f"rule failed: {e}")
 
     def _force_recall(self) -> None:
         query = " ".join(self._recent_texts[-3:]) if self._recent_texts else "recent"
@@ -709,6 +798,14 @@ class OneApp(App):
                 if regime == "shift" and len(_topic_buffer) >= 5:
                     self._condense_thread(_topic_buffer[:-1])
                     _topic_buffer = [_topic_buffer[-1]]
+
+                # Rule learning — high-confidence decisions become rules
+                if confidence > 0.7 and role == "user":
+                    try:
+                        from .rules import learn_rule_from_memory
+                        learn_rule_from_memory(self.project, content, confidence)
+                    except Exception:
+                        pass
 
             except Exception:
                 pass
