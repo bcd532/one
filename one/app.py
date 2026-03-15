@@ -560,6 +560,7 @@ class OneApp(App):
             "/context", "/forget", "/help", "/think",
             "/sessions", "/session", "/export",
             "/auto", "/stop",
+            "/watch", "/unwatch", "/generate",
         }
 
         if text in ("/quit", "/exit", "/q"):
@@ -618,6 +619,15 @@ class OneApp(App):
             return
         if text == "/stop":
             self._stop_auto()
+            return
+        if text == "/watch" or text.startswith("/watch "):
+            self._start_watch(text[6:].strip())
+            return
+        if text == "/unwatch":
+            self._stop_watch()
+            return
+        if text == "/generate":
+            self._generate_claude_md()
             return
 
         # Unknown /commands pass through to Claude
@@ -1186,6 +1196,9 @@ class OneApp(App):
             "  [yellow]/export[/]          export current session as markdown",
             "  [yellow]/auto <goal>[/]     start autonomous agent loop",
             "  [yellow]/stop[/]            stop autonomous loop",
+            "  [yellow]/watch [dir][/]     watch directory for file changes",
+            "  [yellow]/unwatch[/]         stop watching",
+            "  [yellow]/generate[/]        generate CLAUDE.md from rules + entities",
             "  [yellow]/help[/]            this help",
             "",
             "[cyan bold]keybindings[/]",
@@ -1262,6 +1275,33 @@ class OneApp(App):
             self._add_status("auto: stopping after current step")
         else:
             self._add_status("auto: not running")
+
+    def _start_watch(self, directory: str) -> None:
+        """Start watching a directory for file changes."""
+        from .watch import start_watch
+        from .backend import get_backend
+        target = directory if directory else os.getcwd()
+        backend = get_backend()
+        msg = start_watch(target, self.project, backend)
+        self._add_status(f"watch: {msg}")
+
+    def _stop_watch(self) -> None:
+        """Stop the file watcher."""
+        from .watch import stop_watch
+        msg = stop_watch()
+        self._add_status(f"watch: {msg}")
+
+    def _generate_claude_md(self) -> None:
+        """Generate CLAUDE.md from rules and entities, write to project root."""
+        from .claudemd import generate_claude_md
+        try:
+            content = generate_claude_md(self.project)
+            output_path = os.path.join(os.getcwd(), "CLAUDE.md")
+            with open(output_path, "w") as f:
+                f.write(content)
+            self._add_status(f"wrote CLAUDE.md ({len(content)} chars) to {output_path}")
+        except Exception as e:
+            self._add_status(f"generate error: {e}")
 
     def _show_sessions(self) -> None:
         """Display recent sessions."""
