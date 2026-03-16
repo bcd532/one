@@ -37,8 +37,17 @@ RESEARCH:
 KEY FACTS:"""
 
 
-def _call_ollama(prompt: str, timeout: int = OLLAMA_TIMEOUT) -> Optional[str]:
-    """Send a prompt to Ollama and return the response text, or None on failure."""
+def _call_claude(prompt: str, timeout: int = 120) -> Optional[str]:
+    """Send a prompt to Claude via CLI. Returns response text or None."""
+    try:
+        from .proxy import ClaudeProxy
+        return ClaudeProxy.quick_ask(prompt, model="sonnet", timeout=timeout)
+    except Exception:
+        return None
+
+
+def _call_gemma(prompt: str, timeout: int = OLLAMA_TIMEOUT) -> Optional[str]:
+    """Send a prompt to local Gemma via Ollama. Returns response text or None."""
     try:
         result = subprocess.run(
             ["ollama", "run", OLLAMA_MODEL, "--nowordwrap"],
@@ -52,6 +61,21 @@ def _call_ollama(prompt: str, timeout: int = OLLAMA_TIMEOUT) -> Optional[str]:
         return None
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
+
+
+def _call_ollama(prompt: str, timeout: int = OLLAMA_TIMEOUT) -> Optional[str]:
+    """Send a prompt to Claude first, Gemma fallback. Returns response text or None.
+
+    Claude is the primary reasoning engine. Gemma is only used when
+    Claude is unavailable (no CLI, rate limited, etc).
+    """
+    # Claude first — real intelligence
+    result = _call_claude(prompt, timeout=timeout)
+    if result:
+        return result
+
+    # Gemma fallback
+    return _call_gemma(prompt, timeout=timeout)
 
 
 def is_available() -> bool:
