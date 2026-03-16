@@ -12,7 +12,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Optional, Callable
 
-from .store import push_memory, recall, DB_PATH, DB_DIR
+from .store import push_memory, recall, get_recent, DB_PATH, DB_DIR
 from .hdc import encode_text, similarity
 from .gemma import _call_ollama
 
@@ -199,7 +199,7 @@ REASONING: [brief explanation]"""
         self._log(f"running verification sweep (n={n})...")
 
         # Get findings that haven't been verified recently
-        findings = recall("", n=n * 2, project=self.project)
+        findings = get_recent(n=n * 2, project=self.project)
 
         results = []
         verified = 0
@@ -217,7 +217,7 @@ REASONING: [brief explanation]"""
 
     def get_confidence_distribution(self) -> dict:
         """Histogram of confidence levels in the knowledge graph."""
-        findings = recall("", n=500, project=self.project)
+        findings = get_recent(n=500, project=self.project)
 
         buckets = {
             "very_high (0.8-1.0)": 0,
@@ -248,7 +248,7 @@ REASONING: [brief explanation]"""
 
     def archive_deprecated(self, threshold: float = DEPRECATION_THRESHOLD) -> int:
         """Archive memories below confidence threshold. Returns count archived."""
-        findings = recall("", n=500, project=self.project)
+        findings = get_recent(n=500, project=self.project)
         archived = 0
 
         for f in findings:

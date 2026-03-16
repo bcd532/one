@@ -31,9 +31,8 @@ def _setup_tables(conn):
         CREATE TABLE IF NOT EXISTS entities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
-            entity_type TEXT NOT NULL,
-            observation_count INTEGER DEFAULT 1,
-            project TEXT DEFAULT 'global'
+            type TEXT NOT NULL,
+            observation_count INTEGER DEFAULT 1
         );
     """)
     conn.commit()
@@ -60,9 +59,9 @@ def _insert_entity(conn, project, name="TestEntity", entity_type="concept",
                     observation_count=1):
     """Insert an entity row for testing."""
     conn.execute(
-        "INSERT INTO entities (name, entity_type, observation_count, project) "
-        "VALUES (?, ?, ?, ?)",
-        (name, entity_type, observation_count, project),
+        "INSERT INTO entities (name, type, observation_count) "
+        "VALUES (?, ?, ?)",
+        (name, entity_type, observation_count),
     )
     conn.commit()
 
@@ -401,7 +400,7 @@ class TestAutoFix:
         assert stats["merged_entities"] >= 1
         # Only one should remain
         rows = conn.execute(
-            "SELECT * FROM entities WHERE project = ?", ("test_project",)
+            "SELECT * FROM entities WHERE name IN ('Python', 'python')"
         ).fetchall()
         remaining = [dict(r) for r in rows]
         if len(remaining) > 0:

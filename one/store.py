@@ -208,6 +208,19 @@ def get_memory_by_time(
     return [dict(r) for r in rows]
 
 
+def get_recent(n: int = 50, project: Optional[str] = None) -> list[dict]:
+    """Get recent memories by timestamp, no vector search needed."""
+    conn = _get_conn()
+    proj = project or _current_project
+    rows = conn.execute(
+        "SELECT id, raw_text, source, timestamp, tm_label, regime_tag, aif_confidence "
+        "FROM memories WHERE project = ? OR project = 'global' "
+        "ORDER BY timestamp DESC LIMIT ?",
+        (proj, n),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ── Entity operations ──────────────────────────────────────────────
 
 def ensure_entity(entity: dict) -> int:

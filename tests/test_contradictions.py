@@ -105,18 +105,18 @@ class TestSchema:
 class TestMineContradictions:
     def test_returns_empty_for_fewer_than_two_findings(self, monkeypatch, miner):
         """If recall returns < 2 findings, there's nothing to compare."""
-        monkeypatch.setattr("one.contradictions.recall", lambda *a, **kw: [])
+        monkeypatch.setattr("one.contradictions.get_recent", lambda *a, **kw: [])
         assert miner.mine_contradictions() == []
 
     def test_returns_empty_for_one_finding(self, monkeypatch, miner):
-        monkeypatch.setattr("one.contradictions.recall", lambda *a, **kw: [
+        monkeypatch.setattr("one.contradictions.get_recent", lambda *a, **kw: [
             {"id": "1", "raw_text": "X increases performance", "source": "paper1"},
         ])
         assert miner.mine_contradictions() == []
 
     def test_detects_negation_contradiction(self, monkeypatch, miner):
         """Two findings with negation asymmetry and topical overlap."""
-        monkeypatch.setattr("one.contradictions.recall", lambda *a, **kw: [
+        monkeypatch.setattr("one.contradictions.get_recent", lambda *a, **kw: [
             {"id": "1", "raw_text": "The drug increases cancer survival rates significantly",
              "source": "paper1"},
             {"id": "2", "raw_text": "The drug does not increase cancer survival rates",
@@ -128,7 +128,7 @@ class TestMineContradictions:
 
     def test_skips_same_source(self, monkeypatch, miner):
         """Findings from the same source are not compared."""
-        monkeypatch.setattr("one.contradictions.recall", lambda *a, **kw: [
+        monkeypatch.setattr("one.contradictions.get_recent", lambda *a, **kw: [
             {"id": "1", "raw_text": "The drug increases cancer survival rates",
              "source": "paper1"},
             {"id": "2", "raw_text": "The drug does not increase cancer survival rates",
@@ -138,7 +138,7 @@ class TestMineContradictions:
 
     def test_quantitative_contradiction(self, monkeypatch, miner):
         """Different percentages on the same topic should be flagged."""
-        monkeypatch.setattr("one.contradictions.recall", lambda *a, **kw: [
+        monkeypatch.setattr("one.contradictions.get_recent", lambda *a, **kw: [
             {"id": "1", "raw_text": "Model accuracy reached 95% training data",
              "source": "a"},
             {"id": "2", "raw_text": "Model accuracy reached 72% training data",
@@ -149,7 +149,7 @@ class TestMineContradictions:
 
     def test_no_contradiction_without_overlap(self, monkeypatch, miner):
         """Two unrelated texts should not be flagged."""
-        monkeypatch.setattr("one.contradictions.recall", lambda *a, **kw: [
+        monkeypatch.setattr("one.contradictions.get_recent", lambda *a, **kw: [
             {"id": "1", "raw_text": "Python has dynamic typing", "source": "a"},
             {"id": "2", "raw_text": "The sunset was beautiful tonight", "source": "b"},
         ])
@@ -164,13 +164,13 @@ class TestMineContradictions:
             captured["n"] = kwargs.get("n")
             return []
 
-        monkeypatch.setattr("one.contradictions.recall", fake_recall)
+        monkeypatch.setattr("one.contradictions.get_recent", fake_recall)
         miner.mine_contradictions(limit=7)
         assert captured["n"] == 7
 
     def test_deduplicates_pairs(self, monkeypatch, miner):
         """Each pair should only appear once regardless of ordering."""
-        monkeypatch.setattr("one.contradictions.recall", lambda *a, **kw: [
+        monkeypatch.setattr("one.contradictions.get_recent", lambda *a, **kw: [
             {"id": "1", "raw_text": "The treatment improves infection rates significantly",
              "source": "a"},
             {"id": "2", "raw_text": "The treatment does not improve infection rates",
@@ -525,7 +525,7 @@ class TestEdgeCases:
         """on_log callback receives messages during mining."""
         monkeypatch.setattr("one.contradictions._call_ollama", lambda *a, **kw: None)
         monkeypatch.setattr("one.contradictions.push_memory", lambda *a, **kw: "m")
-        monkeypatch.setattr("one.contradictions.recall", lambda *a, **kw: [])
+        monkeypatch.setattr("one.contradictions.get_recent", lambda *a, **kw: [])
         logs = []
         m = ContradictionMiner("test_project", on_log=logs.append)
         m.mine_contradictions()
@@ -567,7 +567,7 @@ class TestEdgeCases:
 
     def test_mine_multiple_contradictions(self, monkeypatch, miner):
         """Multiple contradictions should be found from a set of findings."""
-        monkeypatch.setattr("one.contradictions.recall", lambda *a, **kw: [
+        monkeypatch.setattr("one.contradictions.get_recent", lambda *a, **kw: [
             {"id": "1", "raw_text": "Treatment increases patient recovery time significantly",
              "source": "a"},
             {"id": "2", "raw_text": "Treatment does not increase patient recovery time at all",

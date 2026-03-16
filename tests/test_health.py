@@ -29,9 +29,8 @@ def _setup_tables(conn):
         CREATE TABLE IF NOT EXISTS entities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
-            entity_type TEXT NOT NULL,
-            observation_count INTEGER DEFAULT 1,
-            project TEXT DEFAULT 'global'
+            type TEXT NOT NULL,
+            observation_count INTEGER DEFAULT 1
         );
 
         CREATE TABLE IF NOT EXISTS universal_patterns (
@@ -83,7 +82,7 @@ def _setup_tables(conn):
             project TEXT DEFAULT 'global'
         );
 
-        CREATE TABLE IF NOT EXISTS rules (
+        CREATE TABLE IF NOT EXISTS rule_nodes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project TEXT DEFAULT 'global',
             source_count INTEGER DEFAULT 0
@@ -177,16 +176,16 @@ class TestEntities:
     def test_entities_breakdown(self, dash):
         conn = mod._get_conn()
         conn.execute(
-            "INSERT INTO entities (name, entity_type, project) VALUES (?, ?, ?)",
-            ("Python", "concept", "test_project"),
+            "INSERT INTO entities (name, type) VALUES (?, ?)",
+            ("Python", "concept"),
         )
         conn.execute(
-            "INSERT INTO entities (name, entity_type, project) VALUES (?, ?, ?)",
-            ("main.py", "file", "test_project"),
+            "INSERT INTO entities (name, type) VALUES (?, ?)",
+            ("main.py", "file"),
         )
         conn.execute(
-            "INSERT INTO entities (name, entity_type, project) VALUES (?, ?, ?)",
-            ("FastAPI", "concept", "test_project"),
+            "INSERT INTO entities (name, type) VALUES (?, ?)",
+            ("FastAPI", "concept"),
         )
         conn.commit()
         e = dash.entities()
@@ -199,16 +198,16 @@ class TestEntities:
     def test_entities_percentages(self, dash):
         conn = mod._get_conn()
         conn.execute(
-            "INSERT INTO entities (name, entity_type, project) VALUES (?, ?, ?)",
-            ("A", "concept", "test_project"),
+            "INSERT INTO entities (name, type) VALUES (?, ?)",
+            ("A", "concept"),
         )
         conn.execute(
-            "INSERT INTO entities (name, entity_type, project) VALUES (?, ?, ?)",
-            ("B", "concept", "test_project"),
+            "INSERT INTO entities (name, type) VALUES (?, ?)",
+            ("B", "concept"),
         )
         conn.execute(
-            "INSERT INTO entities (name, entity_type, project) VALUES (?, ?, ?)",
-            ("C", "file", "test_project"),
+            "INSERT INTO entities (name, type) VALUES (?, ?)",
+            ("C", "file"),
         )
         conn.commit()
         e = dash.entities()
@@ -258,11 +257,11 @@ class TestIntelligence:
         )
         # Add rules
         conn.execute(
-            "INSERT INTO rules (project, source_count) VALUES (?, ?)",
+            "INSERT INTO rule_nodes (project, source_count) VALUES (?, ?)",
             ("test_project", 5),
         )
         conn.execute(
-            "INSERT INTO rules (project, source_count) VALUES (?, ?)",
+            "INSERT INTO rule_nodes (project, source_count) VALUES (?, ?)",
             ("test_project", 1),
         )
         conn.commit()

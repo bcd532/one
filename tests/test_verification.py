@@ -462,7 +462,7 @@ class TestVerificationSweep:
 
 class TestConfidenceDistribution:
     def test_empty_project(self, monkeypatch):
-        monkeypatch.setattr("one.verification.recall", lambda query, n=10, project=None: [])
+        monkeypatch.setattr("one.verification.get_recent", lambda n=50, project=None: [])
         engine = VerificationEngine("test_project")
         dist = engine.get_confidence_distribution()
         assert dist["total"] == 0
@@ -470,7 +470,7 @@ class TestConfidenceDistribution:
         assert all(v == 0 for v in dist["distribution"].values())
 
     def test_single_high_confidence(self, monkeypatch):
-        monkeypatch.setattr("one.verification.recall", lambda query, n=10, project=None: [
+        monkeypatch.setattr("one.verification.get_recent", lambda n=50, project=None: [
             {"id": "1", "raw_text": "High confidence finding", "aif_confidence": 0.9},
         ])
         engine = VerificationEngine("test_project")
@@ -484,7 +484,7 @@ class TestConfidenceDistribution:
             {"id": str(i), "raw_text": f"Finding {i}", "aif_confidence": c}
             for i, c in enumerate([0.95, 0.85, 0.7, 0.65, 0.5, 0.3, 0.1])
         ]
-        monkeypatch.setattr("one.verification.recall", lambda query, n=10, project=None: findings)
+        monkeypatch.setattr("one.verification.get_recent", lambda n=50, project=None: findings)
         engine = VerificationEngine("test_project")
         dist = engine.get_confidence_distribution()
         assert dist["total"] == 7
@@ -495,7 +495,7 @@ class TestConfidenceDistribution:
         assert dist["distribution"]["very_low (0.0-0.2)"] == 1
 
     def test_average_confidence_correct(self, monkeypatch):
-        monkeypatch.setattr("one.verification.recall", lambda query, n=10, project=None: [
+        monkeypatch.setattr("one.verification.get_recent", lambda n=50, project=None: [
             {"id": "1", "raw_text": "A", "aif_confidence": 0.4},
             {"id": "2", "raw_text": "B", "aif_confidence": 0.6},
         ])
@@ -510,7 +510,7 @@ class TestConfidenceDistribution:
             {"id": "3", "raw_text": "Exact 0.4", "aif_confidence": 0.4},
             {"id": "4", "raw_text": "Exact 0.2", "aif_confidence": 0.2},
         ]
-        monkeypatch.setattr("one.verification.recall", lambda query, n=10, project=None: findings)
+        monkeypatch.setattr("one.verification.get_recent", lambda n=50, project=None: findings)
         engine = VerificationEngine("test_project")
         dist = engine.get_confidence_distribution()
         assert dist["distribution"]["very_high (0.8-1.0)"] == 1
@@ -519,7 +519,7 @@ class TestConfidenceDistribution:
         assert dist["distribution"]["low (0.2-0.4)"] == 1
 
     def test_distribution_has_all_buckets(self, monkeypatch):
-        monkeypatch.setattr("one.verification.recall", lambda query, n=10, project=None: [])
+        monkeypatch.setattr("one.verification.get_recent", lambda n=50, project=None: [])
         engine = VerificationEngine("test_project")
         dist = engine.get_confidence_distribution()
         expected_buckets = [
@@ -538,7 +538,7 @@ class TestConfidenceDistribution:
 
 class TestArchiveDeprecated:
     def test_archive_below_threshold(self, monkeypatch):
-        monkeypatch.setattr("one.verification.recall", lambda query, n=10, project=None: [
+        monkeypatch.setattr("one.verification.get_recent", lambda n=50, project=None: [
             {"id": "1", "raw_text": "Low confidence finding", "aif_confidence": 0.1},
         ])
         engine = VerificationEngine("test_project")
@@ -546,7 +546,7 @@ class TestArchiveDeprecated:
         assert archived == 1
 
     def test_archive_keeps_high_confidence(self, monkeypatch):
-        monkeypatch.setattr("one.verification.recall", lambda query, n=10, project=None: [
+        monkeypatch.setattr("one.verification.get_recent", lambda n=50, project=None: [
             {"id": "1", "raw_text": "High confidence", "aif_confidence": 0.9},
         ])
         engine = VerificationEngine("test_project")
@@ -554,7 +554,7 @@ class TestArchiveDeprecated:
         assert archived == 0
 
     def test_archive_custom_threshold(self, monkeypatch):
-        monkeypatch.setattr("one.verification.recall", lambda query, n=10, project=None: [
+        monkeypatch.setattr("one.verification.get_recent", lambda n=50, project=None: [
             {"id": "1", "raw_text": "Medium conf", "aif_confidence": 0.4},
         ])
         engine = VerificationEngine("test_project")
@@ -563,14 +563,14 @@ class TestArchiveDeprecated:
         assert archived == 1
 
     def test_archive_empty_project(self, monkeypatch):
-        monkeypatch.setattr("one.verification.recall", lambda query, n=10, project=None: [])
+        monkeypatch.setattr("one.verification.get_recent", lambda n=50, project=None: [])
         engine = VerificationEngine("test_project")
         archived = engine.archive_deprecated()
         assert archived == 0
 
     def test_archive_uses_deprecation_threshold_default(self, monkeypatch):
         assert DEPRECATION_THRESHOLD == 0.2
-        monkeypatch.setattr("one.verification.recall", lambda query, n=10, project=None: [
+        monkeypatch.setattr("one.verification.get_recent", lambda n=50, project=None: [
             {"id": "1", "raw_text": "Just above threshold", "aif_confidence": 0.2},
             {"id": "2", "raw_text": "Below threshold", "aif_confidence": 0.15},
         ])
@@ -579,7 +579,7 @@ class TestArchiveDeprecated:
         assert archived == 1  # Only the 0.15 one
 
     def test_archive_log_callback(self, monkeypatch):
-        monkeypatch.setattr("one.verification.recall", lambda query, n=10, project=None: [
+        monkeypatch.setattr("one.verification.get_recent", lambda n=50, project=None: [
             {"id": "1", "raw_text": "Low", "aif_confidence": 0.05},
         ])
         log_messages = []
@@ -593,7 +593,7 @@ class TestArchiveDeprecated:
         def tracking_push(*args, **kwargs):
             pushed.append({"args": args, "kwargs": kwargs})
 
-        monkeypatch.setattr("one.verification.recall", lambda query, n=10, project=None: [
+        monkeypatch.setattr("one.verification.get_recent", lambda n=50, project=None: [
             {"id": "1", "raw_text": "Bad finding to deprecate", "aif_confidence": 0.05},
         ])
         monkeypatch.setattr("one.verification.push_memory", tracking_push)

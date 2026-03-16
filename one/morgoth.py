@@ -236,73 +236,128 @@ class MorgothMode:
 
     def _advance_phase(self) -> None:
         """Move to the next phase."""
-        if self.phase < Phase.ITERATE:
-            self.phase += 1
+        if self.phase == Phase.CONTINUOUS:
+            # Stay in continuous, just bump iteration
+            self.iteration += 1
+            self.phase = Phase.UNDERSTAND
         elif self.phase == Phase.ITERATE:
             # Loop back to RESEARCH for next iteration
             self.phase = Phase.RESEARCH
             self.iteration += 1
             self._log(f"starting iteration {self.iteration}")
-        else:
-            # Continuous mode: generate next goal
-            self.phase = Phase.UNDERSTAND
-            self.iteration += 1
+        elif self.phase < Phase.ITERATE:
+            self.phase += 1
 
     # ── Phase Implementations ──────────────────────────────────
 
     def _phase_understand(self) -> None:
-        """Phase 1: Map the problem space."""
+        """Phase 1: Map the problem space using local research."""
         self._log("mapping problem space...")
 
-        # Launch Wave 1: Conductor, Surveyor, Historian, Devil's Advocate
-        self._launch_wave(WAVE_1)
+        # Use research engine to actually investigate the goal
+        try:
+            from .research import start_research
+            result = start_research(
+                topic=self.goal,
+                project=self.project,
+                turn_budget=5,
+                on_log=lambda m: self._log(f"research: {m}"),
+            )
+            self._log(f"research: {result['findings']} findings, {result['gaps_remaining']} gaps")
+        except Exception as e:
+            self._log(f"research failed: {e}")
 
         # Map the knowledge frontier
         self.frontier.map_frontier(self.goal)
 
-        # Wait for wave to produce initial findings
-        self._wait_for_findings(min_findings=3, timeout=300)
+        # Also try swarm if proxy is available
+        if self.proxy_factory:
+            self._launch_wave(WAVE_1)
+            self._wait_for_findings(min_findings=3, timeout=120)
 
     def _phase_research(self) -> None:
-        """Phase 2: Deep dive every sub-problem."""
+        """Phase 2: Deep dive — contradictions, dialectic, deeper research."""
         self._log("deep research phase...")
 
-        # Launch Wave 2: Mechanist, Contrarian, Analogist, Verifier
-        self._launch_wave(WAVE_2)
-
-        # Mine for contradictions
+        # Mine for contradictions in existing knowledge
         contradictions = self.contradictions.mine_contradictions()
+        self._log(f"found {len(contradictions)} potential contradictions")
         for c in contradictions[:5]:
             self.contradictions.score_contradiction(
                 c["finding_a"], c["finding_b"],
             )
 
-        # Run dialectics on major findings
-        findings = self._get_high_value_findings(5)
-        for f in findings:
-            self.dialectic.run_full_dialectic(f)
+        # Run dialectics on recent memories
+        from .store import get_recent
+        recent = get_recent(n=20, project=self.project)
+        high_conf = [m for m in recent if m.get("aif_confidence", 0) > 0.7]
+        self._log(f"running dialectic on {len(high_conf)} high-confidence findings")
+        for m in high_conf[:5]:
+            try:
+                self.dialectic.run_full_dialectic(m["raw_text"])
+            except Exception:
+                pass
 
-        self._wait_for_findings(min_findings=10, timeout=600)
+        # Do another round of research on gaps
+        try:
+            from .research import research_frontier
+            frontier = research_frontier(self.project)
+            gaps = frontier.get("open_gaps", [])
+            if gaps:
+                from .research import start_research
+                gap_topic = gaps[0].get("question", self.goal)
+                self._log(f"researching gap: {gap_topic[:60]}")
+                start_research(
+                    topic=gap_topic,
+                    project=self.project,
+                    turn_budget=3,
+                    on_log=lambda m: self._log(f"gap-research: {m}"),
+                )
+        except Exception as e:
+            self._log(f"gap research failed: {e}")
+
+        if self.proxy_factory:
+            self._launch_wave(WAVE_2)
+            self._wait_for_findings(min_findings=5, timeout=120)
 
     def _phase_synthesize(self) -> None:
         """Phase 3: Connect findings, extract patterns."""
         self._log("synthesis phase...")
 
-        # Extract analogy templates from findings
-        findings = self._get_high_value_findings(20)
-        for f in findings[:10]:
-            template = self.analogy.extract_template(f)
-            self.analogy.match_templates(template)
+        # Run cross-domain synthesis
+        try:
+            from .synthesis import run_deep_synthesis
+            results = run_deep_synthesis(self.project, depth=2)
+            self._log(f"synthesis produced {len(results)} new connections")
+        except Exception as e:
+            self._log(f"synthesis failed: {e}")
+
+        # Extract analogy templates from high-value findings
+        from .store import get_recent
+        recent = get_recent(n=30, project=self.project)
+        for m in recent[:10]:
+            try:
+                template = self.analogy.extract_template(m["raw_text"])
+                self.analogy.match_templates(template)
+            except Exception:
+                pass
 
         # Find universal patterns
-        self.analogy.find_universal_patterns(min_domains=2)
+        try:
+            self.analogy.find_universal_patterns(min_domains=2)
+        except Exception:
+            pass
 
         # Resolve active contradictions
         active = self.contradictions.get_active()
+        self._log(f"resolving {len(active)} active contradictions")
         for c in active[:3]:
-            self.contradictions.resolve_contradiction(
-                c["finding_a"], c["finding_b"], c["id"],
-            )
+            try:
+                self.contradictions.resolve_contradiction(
+                    c["finding_a"], c["finding_b"], c["id"],
+                )
+            except Exception:
+                pass
 
         # Generate best questions
         best_q = self.frontier.best_question(self.goal)
@@ -310,57 +365,64 @@ class MorgothMode:
             self._log(f"best question: {best_q.get('question', '')[:80]}")
 
     def _phase_build(self) -> None:
-        """Phase 4: Write actual production code + tests."""
+        """Phase 4: Run experiments on testable hypotheses."""
         self._log("build phase...")
 
-        # Launch Wave 3: Synthesizer, Experimentalist, Futurist, Integrator
-        self._launch_wave(WAVE_3)
+        # Get findings to test
+        from .store import get_recent
+        recent = get_recent(n=20, project=self.project)
 
-        # Run experiments on testable hypotheses
-        findings = self._get_high_value_findings(10)
-        for f in findings[:3]:
-            testability = self.experiments.is_testable(f)
-            if testability.get("testable"):
-                self.experiments.run_full_experiment(f)
+        tested = 0
+        for m in recent[:10]:
+            try:
+                testability = self.experiments.is_testable(m["raw_text"])
+                if testability.get("testable"):
+                    self._log(f"testing: {m['raw_text'][:60]}")
+                    self.experiments.run_full_experiment(m["raw_text"])
+                    tested += 1
+            except Exception:
+                pass
 
-        self._wait_for_findings(min_findings=5, timeout=600)
+        self._log(f"tested {tested} hypotheses")
+
+        if self.proxy_factory:
+            self._launch_wave(WAVE_3)
+            self._wait_for_findings(min_findings=3, timeout=120)
 
     def _phase_verify(self) -> None:
         """Phase 5: Full adversarial review."""
         self._log("verification phase...")
 
-        # Run verification sweep
-        self.verification.run_verification_sweep(n=20)
+        # Verify recent findings
+        results = self.verification.run_verification_sweep(n=20)
+        self._log(f"verified {len(results)} findings")
 
         # Check health
         report = self.health.full_report()
+        self._log(f"health: {report.get('volume', {}).get('total', 0)} memories")
         warnings = report.get("warnings", [])
-        if warnings:
-            for w in warnings:
-                self._log(f"health warning: {w['message']}")
+        for w in warnings:
+            self._log(f"health warning: {w['message']}")
 
         # Archive deprecated findings
-        self.verification.archive_deprecated()
+        archived = self.verification.archive_deprecated()
+        self._log(f"archived {archived} deprecated findings")
 
     def _phase_iterate(self) -> None:
-        """Phase 6: Feed learnings back, repeat."""
+        """Phase 6: Feed learnings back, plan next iteration."""
         self._log("iteration phase...")
 
-        # What did we learn?
         confidence_dist = self.verification.get_confidence_distribution()
         self._log(f"confidence distribution: {confidence_dist}")
 
-        # Update frontier with new findings
         self.frontier.update_frontier(self.goal, [])
 
-        # Check coverage
         coverage = self.frontier.frontier_coverage(self.goal)
         self._log(f"frontier coverage: {coverage:.1%}")
 
-        # If coverage > 80%, consider moving to continuous
         if coverage > 0.8:
             self._log("high coverage — moving to continuous mode")
-            self.phase = Phase.CONTINUOUS - 1  # _advance_phase will increment
+            self.phase = Phase.CONTINUOUS
 
     def _phase_continuous(self) -> None:
         """Phase 7: Continuous improvement — Morgoth does not stop."""

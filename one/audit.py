@@ -250,8 +250,7 @@ class AuditEngine:
         # Entity duplicates (case-insensitive name match)
         try:
             rows = conn.execute(
-                "SELECT id, name, entity_type, observation_count FROM entities WHERE project = ?",
-                (self.project,),
+                "SELECT id, name, type as entity_type, observation_count FROM entities",
             ).fetchall()
 
             name_map: dict[str, list[dict]] = {}
@@ -313,8 +312,7 @@ class AuditEngine:
         # Score all entities
         try:
             rows = conn.execute(
-                "SELECT id, name, entity_type, observation_count FROM entities WHERE project = ?",
-                (self.project,),
+                "SELECT id, name, type as entity_type, observation_count FROM entities",
             ).fetchall()
 
             for row in rows:
@@ -424,8 +422,8 @@ class AuditEngine:
         # 4. Delete orphaned entities
         try:
             orphans = conn.execute(
-                "SELECT id FROM entities WHERE project = ? AND observation_count = 0",
-                (self.project,),
+                "SELECT id FROM entities WHERE observation_count = 0",
+                (),
             ).fetchall()
             for orphan in orphans:
                 conn.execute("DELETE FROM entities WHERE id = ?", (orphan["id"],))
@@ -557,7 +555,7 @@ class AuditEngine:
 
     # ── Full Audit Report ──────────────────────────────────────
 
-    def run_full_audit(self) -> dict:
+    def run_full_audit(self, auto_fix: bool = False) -> dict:
         """Run a complete audit of the knowledge base."""
         self._log("running full audit...")
 
@@ -583,8 +581,38 @@ class AuditEngine:
             "health": "healthy" if total_issues < 10 else "needs_attention" if total_issues < 50 else "critical",
         }
 
+        if auto_fix and total_issues > 0:
+            fixed = self._auto_fix(garbage, duplicates)
+            report["fixed"] = fixed
+            self._log(f"auto-fix: removed {fixed} items")
+
         self._log(f"audit complete: {total_issues} issues found ({report['health']})")
         return report
+
+    def _auto_fix(self, garbage: dict, duplicates: dict) -> int:
+        """Remove garbage memories and duplicate entities."""
+        conn = _get_conn()
+        fixed = 0
+        for m in garbage["garbage_memories"]:
+            try:
+                conn.execute("DELETE FROM memories WHERE id = ?", (m["id"],))
+                fixed += 1
+            except sqlite3.OperationalError:
+                pass
+        for e in garbage["garbage_entities"]:
+            try:
+                conn.execute("DELETE FROM entities WHERE id = ?", (e["id"],))
+                fixed += 1
+            except sqlite3.OperationalError:
+                pass
+        for d in duplicates["duplicate_entities"]:
+            try:
+                conn.execute("DELETE FROM entities WHERE id = ?", (d.get("id_b", d.get("id")),))
+                fixed += 1
+            except sqlite3.OperationalError:
+                pass
+        conn.commit()
+        return fixed
 
     def format_report(self, report: Optional[dict] = None) -> str:
         """Format audit report as readable string."""
