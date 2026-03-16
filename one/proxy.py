@@ -118,6 +118,57 @@ class ClaudeProxy:
         for line in self.process.stderr:
             pass
 
+    def ask(self, prompt: str, timeout: int = 120) -> Optional[str]:
+        """Synchronous: send prompt, wait for full response, return text.
+
+        Spins up a fresh Claude process, sends one message, collects
+        the full response, and shuts down. This is for research/morgoth
+        where we need Claude's brain, not a conversation.
+        """
+        result_text = []
+        done = threading.Event()
+
+        proxy = ClaudeProxy(
+            model=self.model,
+            cwd=self.cwd,
+            permission_mode="plan",
+            system_prompt=self.system_prompt,
+            append_system_prompt=self.append_system_prompt,
+        )
+
+        def _on_event(event):
+            etype = event.get("type", "")
+            if etype == "assistant":
+                msg = event.get("message", {})
+                content = msg.get("content", [])
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            result_text.append(block.get("text", ""))
+                elif isinstance(content, str):
+                    result_text.append(content)
+            elif etype == "result":
+                done.set()
+
+        proxy.on_event(_on_event)
+
+        try:
+            proxy.start()
+            proxy.send(prompt)
+            done.wait(timeout=timeout)
+        except Exception:
+            pass
+        finally:
+            proxy.stop()
+
+        return "\n".join(result_text).strip() if result_text else None
+
+    @staticmethod
+    def quick_ask(prompt: str, model: str = "sonnet", cwd: str = ".", timeout: int = 120) -> Optional[str]:
+        """One-shot: ask Claude a question, get the answer. No state."""
+        p = ClaudeProxy(model=model, cwd=cwd, permission_mode="plan")
+        return p.ask(prompt, timeout=timeout)
+
     @property
     def alive(self) -> bool:
         return self.process is not None and self.process.poll() is None

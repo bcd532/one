@@ -405,16 +405,16 @@ def _execute_research_prompt(
     depth_level: int = 0,
     on_log: Optional[Callable[[str], None]] = None,
 ) -> list[int]:
-    """Send a prompt to Gemma, store findings with quality scoring. Returns finding IDs."""
-    from .gemma import _call_ollama, is_available
+    """Send a prompt to Claude (primary) or Gemma (fallback). Returns finding IDs."""
+    from .gemma import _call_ollama
 
-    if not is_available():
-        if on_log:
-            on_log("gemma unavailable — skipping prompt")
-        return []
+    if on_log:
+        on_log("researching...")
 
     result = _call_ollama(prompt, timeout=120)
     if not result:
+        if on_log:
+            on_log("no response")
         return []
 
     # Split response into individual findings
@@ -500,10 +500,8 @@ def _identify_gaps(topic_id: int, topic: str, depth_level: int = 0) -> list[tupl
 
     Returns list of (question, priority) tuples.
     """
-    from .gemma import _call_ollama, is_available
-
     findings = _get_findings(topic_id)
-    if not findings or not is_available():
+    if not findings:
         return []
 
     findings_text = "\n".join(
@@ -516,6 +514,7 @@ def _identify_gaps(topic_id: int, topic: str, depth_level: int = 0) -> list[tupl
         findings=findings_text,
     )
 
+    from .gemma import _call_ollama
     result = _call_ollama(prompt, timeout=60)
     if not result:
         return []
@@ -555,24 +554,20 @@ def _run_adversarial_check(
     For each top finding, searches for counter-arguments and contradictions.
     Returns IDs of new adversarial findings.
     """
-    from .gemma import _call_ollama, is_available
-
-    if not is_available():
-        return []
-
     findings = _get_findings(topic_id, limit=5)
     if not findings:
         return []
 
-    log = on_log or (lambda s: None)
+    log = on_log or (lambda _s: None)
     adversarial_ids = []
 
-    for finding in findings[:3]:  # Top 3 findings
+    for finding in findings[:3]:
         prompt = ADVERSARIAL_PROMPT.format(
             topic=topic,
             finding=finding["content"][:500],
         )
 
+        from .gemma import _call_ollama
         result = _call_ollama(prompt, timeout=90)
         if not result or len(result.strip()) < 30:
             continue
