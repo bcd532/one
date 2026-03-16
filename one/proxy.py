@@ -121,57 +121,56 @@ class ClaudeProxy:
     def ask(self, prompt: str, timeout: int = 120) -> Optional[str]:
         """Synchronous: send prompt, wait for full response, return text.
 
-        Spins up a fresh Claude process, sends one message, collects
-        the full response, and shuts down. This is for research/morgoth
-        where we need Claude's brain, not a conversation.
+        Uses claude -p (print mode) for clean one-shot responses.
+        No stream-json, no event parsing — just subprocess in, text out.
         """
-        result_text = []
-        done = threading.Event()
+        import subprocess as _sp
 
-        proxy = ClaudeProxy(
-            model=self.model,
-            cwd=self.cwd,
-            permission_mode="bypassPermissions",
-            system_prompt="You are a research engine. Read files, search code, analyze data. Report your findings as clear bullet points. Do NOT use the Skill tool. Do NOT enter plan mode. Do NOT ask clarifying questions. Just research and report.",
-            disallowed_tools=["Skill"],
-        )
-
-        def _on_event(event):
-            etype = event.get("type", "")
-            if etype == "assistant":
-                msg = event.get("message", {})
-                content = msg.get("content", [])
-                if isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            result_text.append(block.get("text", ""))
-                elif isinstance(content, str):
-                    result_text.append(content)
-            elif etype == "result":
-                done.set()
-
-        proxy.on_event(_on_event)
+        cmd = ["claude", "-p", "--model", self.model, "--output-format", "text"]
+        if self.system_prompt:
+            cmd.extend(["--system-prompt", self.system_prompt])
 
         try:
-            proxy.start()
-            proxy.send(prompt)
-            done.wait(timeout=timeout)
-        except Exception:
+            result = _sp.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=self.cwd,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except (_sp.TimeoutExpired, OSError):
             pass
-        finally:
-            proxy.stop()
-
-        return "\n".join(result_text).strip() if result_text else None
+        return None
 
     @staticmethod
     def quick_ask(prompt: str, model: str = "sonnet", cwd: str = ".", timeout: int = 120) -> Optional[str]:
-        """One-shot: ask Claude a question, get the answer. No tools, no skills, just thinking."""
-        p = ClaudeProxy(
-            model=model, cwd=cwd, permission_mode="bypassPermissions",
-            system_prompt="You are a research engine. Read files, search code, analyze data. Report your findings as clear bullet points. Do NOT use the Skill tool. Do NOT enter plan mode. Do NOT ask clarifying questions. Just research and report.",
-            disallowed_tools=["Skill"],
-        )
-        return p.ask(prompt, timeout=timeout)
+        """One-shot: ask Claude a question, get the answer. Simple subprocess call."""
+        import subprocess as _sp
+
+        cmd = [
+            "claude", "-p",
+            "--model", model,
+            "--output-format", "text",
+            "--system-prompt", "You are a research engine. Analyze thoroughly. Report findings as detailed bullet points. No preamble.",
+        ]
+
+        try:
+            result = _sp.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=cwd,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except (_sp.TimeoutExpired, OSError):
+            pass
+        return None
 
     @property
     def alive(self) -> bool:
