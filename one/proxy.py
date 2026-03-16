@@ -132,8 +132,8 @@ class ClaudeProxy:
             model=self.model,
             cwd=self.cwd,
             permission_mode="plan",
-            system_prompt=self.system_prompt,
-            append_system_prompt=self.append_system_prompt,
+            system_prompt="You are a research assistant. Answer questions directly with detailed findings. Do NOT use tools, skills, or try to explore codebases. Just answer the question with your knowledge.",
+            disallowed_tools=["Agent", "Skill", "Bash", "Edit", "Write", "Read", "Glob", "Grep"],
         )
 
         def _on_event(event):
@@ -165,8 +165,12 @@ class ClaudeProxy:
 
     @staticmethod
     def quick_ask(prompt: str, model: str = "sonnet", cwd: str = ".", timeout: int = 120) -> Optional[str]:
-        """One-shot: ask Claude a question, get the answer. No state."""
-        p = ClaudeProxy(model=model, cwd=cwd, permission_mode="plan")
+        """One-shot: ask Claude a question, get the answer. No tools, no skills, just thinking."""
+        p = ClaudeProxy(
+            model=model, cwd=cwd, permission_mode="plan",
+            system_prompt="You are a research assistant. Answer questions directly with detailed analysis. Do NOT use tools, skills, or try to explore codebases. Just answer with your knowledge.",
+            disallowed_tools=["Agent", "Skill", "Bash", "Edit", "Write", "Read", "Glob", "Grep"],
+        )
         return p.ask(prompt, timeout=timeout)
 
     @property
