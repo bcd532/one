@@ -1813,61 +1813,45 @@ def sync_to_foundry(client, project: str = "one", on_log: Optional[Callable] = N
 
     # ── 7. LINK entities to memories ─────────────────────────────
 
-    log("linking entities to memories...")
-    elog("foundry sync: creating links between entities and memories")
+    # ── 7. LINK entities to memories ─────────────────────────────
+    # SDK edits().add_link() queues but has no apply/commit method.
+    # Links require a Foundry Action Type: link_memory_to_entity
+    # (modify MemoryEntry, set entity_id FK to Entity PK).
+    # Once that action exists, uncomment and use:
+    #   client.ontology.actions.link_memory_to_entity(...)
+    #
+    # For now, links exist in local SQLite ontology (file_deps,
+    # calls, symbols tables). Foundry gets objects but not links.
 
     try:
-        from foundry_sdk_runtime.ontology_edit import ObjectLocator
-        from orion_push_sdk.ontology.search._entity_object_type import EntityObjectType
-        from orion_push_sdk.ontology.search._memory_entry_object_type import MemoryEntryObjectType
+        if hasattr(client.ontology.actions, "link_memory_to_entity"):
+            log("linking entities to memories via action...")
+            elog("foundry sync: link action available, creating links")
+            from orion_push_sdk.ontology.search._entity_object_type import EntityObjectType
+            from orion_push_sdk.ontology.search._memory_entry_object_type import MemoryEntryObjectType
+            et = EntityObjectType()
+            mt = MemoryEntryObjectType()
 
-        et = EntityObjectType()
-        mt = MemoryEntryObjectType()
+            deps = conn.execute("SELECT source_file, target_file FROM file_deps").fetchall()
+            for d in deps:
+                try:
+                    ents = client.ontology.objects.Entity.where(et.name == d["source_file"]).take(1)
+                    mems = client.ontology.objects.MemoryEntry.where(mt.tm_label == "file_dep").take(200)
+                    dep_mem = next((m for m in mems if d["target_file"] in (m.raw_text or "")), None)
+                    if ents and dep_mem:
+                        client.ontology.actions.link_memory_to_entity(
+                            memory_entry=dep_mem.get_primary_key(),
+                            entity=ents[0].get_primary_key(),
+                        )
+                        stats["links"] += 1
+                except Exception as e:
+                    elog(f"link FAIL: {d['source_file']}: {e}", "error")
 
-        # For each file dep memory, link the source and target file entities
-        deps = conn.execute("SELECT source_file, target_file FROM file_deps").fetchall()
-        for d in deps:
-            try:
-                # Find the memory for this dep
-                dep_mems = client.ontology.objects.MemoryEntry.where(
-                    mt.source == "ontology"
-                ).where(mt.tm_label == "file_dep").take(500)
-
-                dep_mem = None
-                for dm in dep_mems:
-                    if d["source_file"] in (dm.raw_text or "") and d["target_file"] in (dm.raw_text or ""):
-                        dep_mem = dm
-                        break
-
-                if not dep_mem:
-                    continue
-
-                mem_pk = dep_mem.get_primary_key()
-
-                # Find source and target entities
-                for fname in (d["source_file"], d["target_file"]):
-                    ents = client.ontology.objects.Entity.where(et.name == fname).take(1)
-                    if ents:
-                        ent_pk = ents[0].get_primary_key()
-                        try:
-                            edits = client.ontology.edits()
-                            edits.add_link(
-                                "hasMemoryEntries",
-                                source=ObjectLocator(object_type="Entity", primary_key=ent_pk),
-                                target=ObjectLocator(object_type="MemoryEntry", primary_key=mem_pk),
-                            )
-                            client.ontology.edits.apply(edits)
-                            stats["links"] += 1
-                        except Exception as e:
-                            elog(f"link FAIL: {fname} → {mem_pk}: {e}", "error")
-            except Exception as e:
-                elog(f"link dep FAIL: {d['source_file']} → {d['target_file']}: {e}", "error")
-
-        log(f"linked {stats['links']} entity↔memory pairs")
-
+            log(f"linked {stats['links']} entity↔memory pairs")
+        else:
+            elog("foundry sync: no link_memory_to_entity action — skipping links")
     except Exception as e:
-        elog(f"linking phase FAIL: {e}", "error")
-        log(f"linking failed: {e}")
+        elog(f"linking phase: {e}", "error")
 
     log(f"foundry sync complete: {stats['memories']} memories, {stats['entities']} entities, {stats['links']} links")
     return stats
