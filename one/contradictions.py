@@ -15,7 +15,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Optional, Callable
 
-from .store import push_memory, recall, DB_PATH, DB_DIR
+from .store import push_memory, recall, get_recent, DB_PATH, DB_DIR
 from .hdc import encode_text, similarity
 from .gemma import _call_ollama
 
@@ -121,8 +121,8 @@ class ContradictionMiner:
         """
         self._log("mining contradictions...")
 
-        # Get recent findings
-        findings = recall("", n=limit, project=self.project)
+        # Get recent findings (use direct SQL, not vector search)
+        findings = get_recent(n=limit, project=self.project)
         if len(findings) < 2:
             return []
 

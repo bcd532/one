@@ -84,7 +84,6 @@ def _init_research_schema(conn: sqlite3.Connection) -> None:
             topic_id INTEGER REFERENCES research_topics(id),
             question TEXT NOT NULL,
             status TEXT DEFAULT 'open',
-            priority REAL DEFAULT 0.5,
             resolved_by INTEGER REFERENCES research_findings(id),
             created TEXT NOT NULL
         );
@@ -94,8 +93,25 @@ def _init_research_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_research_findings_type ON research_findings(finding_type);
         CREATE INDEX IF NOT EXISTS idx_research_gaps_topic ON research_gaps(topic_id);
         CREATE INDEX IF NOT EXISTS idx_research_gaps_status ON research_gaps(status);
-        CREATE INDEX IF NOT EXISTS idx_research_gaps_priority ON research_gaps(priority);
     """)
+
+    # Migrate: add missing columns from schema evolution
+    _migrations = [
+        ("research_gaps", "priority", "REAL DEFAULT 0.5"),
+        ("research_findings", "source_quality", "REAL DEFAULT 0.5"),
+        ("research_findings", "quantitative_data", "TEXT"),
+        ("research_findings", "published_date", "TEXT"),
+        ("research_findings", "contradicts_finding_id", "INTEGER"),
+        ("research_findings", "depth_level", "INTEGER DEFAULT 0"),
+        ("research_topics", "depth_level", "INTEGER DEFAULT 0"),
+    ]
+    for table, col, col_type in _migrations:
+        try:
+            conn.execute(f"SELECT {col} FROM {table} LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_research_gaps_priority ON research_gaps(priority)")
     conn.commit()
 
 

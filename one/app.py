@@ -16,7 +16,7 @@ from typing import Optional
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Header, Footer, Input, Static, RichLog, Rule
+from textual.widgets import Header, Footer, Input, Static, RichLog, Rule, TextArea
 from textual.containers import VerticalScroll, Horizontal, Vertical
 from textual.reactive import reactive
 from textual.timer import Timer
@@ -58,19 +58,41 @@ class ThinkingBlock(Static):
     pass
 
 
-class HistoryInput(Input):
-    """Input widget with up/down arrow history navigation.
+class HistoryInput(TextArea):
+    """Multi-line input with word wrap, history navigation, and Enter to submit.
 
-    Maintains an ordered list of previously submitted messages.
-    Up arrow cycles backward through history, down arrow cycles forward.
-    Enter submits the current value and appends it to history.
+    Text wraps within the box instead of scrolling horizontally.
+    Enter submits. Shift+Enter inserts a newline.
+    Up/Down cycle through history when the input is a single line.
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    class Submitted(Message):
+        """Posted when the user presses Enter."""
+        def __init__(self, value: str) -> None:
+            super().__init__()
+            self.value = value
+            self.input = None  # Compat with Input.Submitted
+
+    def __init__(self, placeholder: str = "", **kwargs):
+        super().__init__(**kwargs)
+        self._placeholder = placeholder
         self._history: list[str] = []
         self._history_index: int = -1
         self._draft: str = ""
+
+    def on_mount(self) -> None:
+        self.show_line_numbers = False
+        self.tab_behavior = "focus"
+        self.soft_wrap = True
+
+    @property
+    def value(self) -> str:
+        return self.text
+
+    @value.setter
+    def value(self, v: str) -> None:
+        self.clear()
+        self.insert(v)
 
     def add_to_history(self, text: str) -> None:
         """Append a message to the input history, deduplicating consecutive repeats."""
@@ -83,30 +105,43 @@ class HistoryInput(Input):
         self._draft = ""
 
     def _on_key(self, event) -> None:
-        if event.key == "up":
+        if event.key == "enter":
             event.prevent_default()
             event.stop()
-            if not self._history:
-                return
-            if self._history_index == -1:
-                self._draft = self.value
-                self._history_index = len(self._history) - 1
-            elif self._history_index > 0:
-                self._history_index -= 1
-            self.value = self._history[self._history_index]
-            self.cursor_position = len(self.value)
-        elif event.key == "down":
-            event.prevent_default()
-            event.stop()
-            if self._history_index == -1:
-                return
-            if self._history_index < len(self._history) - 1:
-                self._history_index += 1
+            text = self.text.strip()
+            if text:
+                msg = self.Submitted(text)
+                self.post_message(msg)
+            return
+        if event.key == "shift+enter":
+            # Let TextArea handle shift+enter as newline
+            return
+
+        # History navigation (only when single-line)
+        line_count = self.text.count("\n") + 1
+        if line_count <= 1:
+            if event.key == "up":
+                event.prevent_default()
+                event.stop()
+                if not self._history:
+                    return
+                if self._history_index == -1:
+                    self._draft = self.text
+                    self._history_index = len(self._history) - 1
+                elif self._history_index > 0:
+                    self._history_index -= 1
                 self.value = self._history[self._history_index]
-            else:
-                self._history_index = -1
-                self.value = self._draft
-            self.cursor_position = len(self.value)
+            elif event.key == "down":
+                event.prevent_default()
+                event.stop()
+                if self._history_index == -1:
+                    return
+                if self._history_index < len(self._history) - 1:
+                    self._history_index += 1
+                    self.value = self._history[self._history_index]
+                else:
+                    self._history_index = -1
+                    self.value = self._draft
 
 
 class Sidebar(Vertical):
@@ -218,6 +253,9 @@ class OneApp(App):
         border: tall #444444;
         padding: 0 1;
         color: $text;
+        height: auto;
+        min-height: 3;
+        max-height: 10;
     }
 
     #input-box:focus {
@@ -401,7 +439,7 @@ class OneApp(App):
             f"    [bold cyan]one[/] [#666666]v0.1[/]  {f_tag}  {g_tag}  [#666666]model:{model}  project:{self.project}[/]"
         ))
         chat.mount(Static(
-            "    [#444444]esc:quit  ctrl+l:clear  ctrl+r:recall  ctrl+b:sidebar  /rules  /stats  /cost[/]\n"
+            "    [#444444]esc:stop  ctrl+q:quit  ctrl+l:clear  ctrl+r:recall  ctrl+b:sidebar  /rules  /stats  /cost[/]\n"
             "    [#444444]claude: /commit  /review  /compact  /help  — all pass through[/]"
         ))
         chat.mount(Rule())
@@ -413,6 +451,9 @@ class OneApp(App):
 
         if self.foundry:
             threading.Thread(target=self._sync_rules, daemon=True).start()
+
+        # Boot: map codebase, populate ground truths, verify
+        threading.Thread(target=self._boot_engine, daemon=True).start()
 
         # Session tracking
         self._start_session()
@@ -431,6 +472,71 @@ class OneApp(App):
                     self.call_from_thread(
                         self._add_status, f"synced {count} rules from foundry"
                     )
+        except Exception:
+            pass
+
+    def _boot_engine(self) -> None:
+        """Boot sequence: map codebase, ground truths, verify, sync to Foundry."""
+        try:
+            from .engine import map_codebase, verify_codebase, set_ontology_project
+            from .ground import populate_ground_truths
+
+            set_ontology_project(self.project)
+
+            # 1. Map every function, call, and dependency
+            self.call_from_thread(self._add_status, "engine: mapping codebase...")
+            stats = map_codebase()
+            self.call_from_thread(
+                self._add_status,
+                f"engine: {stats['symbols']} symbols, {stats['calls']} calls, {stats['deps']} deps"
+            )
+
+            # 2. Populate ground truths
+            self.call_from_thread(self._add_status, "engine: loading ground truths...")
+            gt = populate_ground_truths(project=self.project)
+            self.call_from_thread(
+                self._add_status,
+                f"engine: {sum(gt.values())} ground truths loaded"
+            )
+
+            # 3. Verify entire codebase
+            self.call_from_thread(self._add_status, "engine: verifying codebase...")
+            results = verify_codebase(project=self.project)
+            total = results["passed"] + results["failed"]
+            if results["failed"] == 0:
+                self.call_from_thread(
+                    self._add_status,
+                    f"engine: {total}/{total} files verified, 0 issues"
+                )
+            else:
+                self.call_from_thread(
+                    self._add_status,
+                    f"engine: {results['failed']}/{total} FAILED — {results['total_issues']} issues"
+                )
+
+            self.call_from_thread(self._notify, "engine ready")
+
+            # 4. Sync to Foundry in a SEPARATE thread — don't block boot
+            if self.foundry:
+                threading.Thread(target=self._foundry_sync_background, daemon=True).start()
+
+        except Exception as e:
+            try:
+                self.call_from_thread(self._add_status, f"engine boot error: {e}")
+            except Exception:
+                pass
+
+    def _foundry_sync_background(self) -> None:
+        """Sync ontology to Foundry in background — never blocks the UI."""
+        try:
+            from .engine import sync_to_foundry, set_ontology_project
+            set_ontology_project(self.project)
+            self.call_from_thread(self._add_status, "foundry: syncing in background...")
+            sync_stats = sync_to_foundry(self.foundry, project=self.project)
+            self.call_from_thread(
+                self._add_status,
+                f"foundry: {sync_stats['memories']} memories, {sync_stats['entities']} entities synced"
+            )
         except Exception:
             pass
 
@@ -545,26 +651,26 @@ class OneApp(App):
 
     # ── Input handling ───────────────────────────────────────────
 
-    @on(Input.Submitted, "#input-box")
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    @on(HistoryInput.Submitted)
+    def on_input_submitted(self, event: HistoryInput.Submitted) -> None:
         text = event.value.strip()
         if not text:
             return
 
-        event.input.value = ""
         input_widget = self.query_one("#input-box", HistoryInput)
+        input_widget.value = ""
         input_widget.add_to_history(text)
 
         ONE_COMMANDS = {
             "/quit", "/exit", "/q", "/clear", "/cost", "/recall",
-            "/rules", "/stats", "/entities", "/search", "/undo",
+            "/rules", "/rule", "/stats", "/entities", "/search", "/undo",
             "/context", "/forget", "/help", "/think",
             "/sessions", "/session", "/export",
             "/auto", "/stop",
             "/watch", "/unwatch", "/generate",
             "/synthesize", "/research", "/playbooks", "/frontier",
             "/health", "/audit", "/swarm", "/morgoth",
-            "/focus", "/inject", "/scale",
+            "/focus", "/inject", "/ground", "/verify",
         }
 
         if text in ("/quit", "/exit", "/q"):
@@ -662,6 +768,12 @@ class OneApp(App):
             return
         if text.startswith("/inject "):
             self._inject_all(text[8:].strip())
+            return
+        if text == "/ground":
+            self._populate_ground()
+            return
+        if text == "/verify":
+            self._run_verify()
             return
 
         # Unknown /commands pass through to Claude
@@ -1038,18 +1150,68 @@ class OneApp(App):
         if self._auto_loop and self._auto_loop.running and self._response_text:
             self._auto_loop.on_response_complete(self._response_text)
 
-        # Update session turn count
-        if self._session_id:
-            try:
-                from .sessions import add_message
-                # Turn count is tracked via add_message calls; no extra update needed.
-            except Exception:
-                pass
+        # Post-completion: re-verify changed files, re-map, log turn
+        threading.Thread(target=self._post_completion_verify, daemon=True).start()
 
         # Refresh sidebar after each completed turn
         self._refresh_sidebar()
 
     # ── Actions ──────────────────────────────────────────────────
+
+    def _post_completion_verify(self) -> None:
+        """After every Claude completion: log the turn, re-verify, re-map changes."""
+        try:
+            from .engine import (
+                log_turn, verify_codebase, map_codebase,
+                set_ontology_project, track_change,
+            )
+            set_ontology_project(self.project)
+
+            # Log this turn
+            log_turn(
+                self._turn_counter, "assistant", "completion",
+                self._response_text[:300] if self._response_text else "",
+                project=self.project,
+            )
+
+            # Detect which files were touched this turn from recent tool use
+            edited_files = [f for f in self._recent_files if f.endswith(".py")]
+            if not edited_files:
+                return
+
+            # Re-map to pick up any new symbols/calls/deps
+            map_codebase()
+
+            # Verify only the files that changed
+            from .engine import verify_file
+            for fpath in edited_files[-5:]:  # Last 5 edited files
+                if os.path.exists(fpath):
+                    result = verify_file(fpath, project=self.project)
+                    if not result["passed"]:
+                        issues = "; ".join(i["message"] for i in result["issues"][:3])
+                        self.call_from_thread(
+                            self._add_status,
+                            f"engine: {os.path.basename(fpath)} FAILED — {issues}"
+                        )
+                    # Track the change
+                    track_change(
+                        file=fpath,
+                        action="edit",
+                        summary=f"Modified during turn {self._turn_counter}",
+                        verification=result,
+                        linked_files=edited_files,
+                    )
+
+            # Sync to Foundry if available
+            if self.foundry:
+                try:
+                    from .engine import sync_to_foundry
+                    sync_to_foundry(self.foundry, project=self.project)
+                except Exception:
+                    pass
+
+        except Exception:
+            pass
 
     def action_clear_chat(self) -> None:
         chat = self.query_one("#chat-scroll")
@@ -1254,6 +1416,8 @@ class OneApp(App):
             "  [yellow]/audit[/]           knowledge quality audit (--fix to auto-clean)",
             "  [yellow]/focus <agent>[/]   zoom into a swarm agent",
             "  [yellow]/inject <text>[/]   send context to all swarm agents",
+            "  [yellow]/verify[/]          run Zero Hallucination Engine on entire codebase",
+            "  [yellow]/ground[/]          populate knowledge graph with verified ground truths",
             "  [yellow]/help[/]            this help",
             "",
             "[cyan bold]keybindings[/]",
@@ -1325,20 +1489,41 @@ class OneApp(App):
             self._add_status(f"auto error: {e}")
 
     def _stop_auto(self) -> None:
-        """Stop the autonomous loop."""
+        """Stop auto, swarm, and morgoth."""
+        stopped = False
         if self._auto_loop and self._auto_loop.running:
             self._auto_loop.stop()
-            self._add_status("auto: stopping after current step")
-        else:
-            self._add_status("auto: not running")
+            self._add_status("auto: stopping")
+            stopped = True
+        if hasattr(self, "_swarm") and self._swarm:
+            self._swarm.stop()
+            self._swarm = None
+            self._add_status("swarm: stopped")
+            stopped = True
+        if hasattr(self, "_morgoth") and self._morgoth and self._morgoth.active:
+            self._morgoth.stop()
+            self._morgoth = None
+            self._add_status("morgoth: stopped")
+            stopped = True
+        if not stopped:
+            self._add_status("nothing running")
 
     def _start_swarm(self, goal: str) -> None:
         """Launch the multi-agent swarm."""
         try:
             from .swarm import SwarmCoordinator
+
+            def swarm_log(msg):
+                try:
+                    from .engine import elog
+                    elog(f"[swarm] {msg}")
+                    self.call_from_thread(self._add_status, f"swarm: {msg[:80]}")
+                except Exception:
+                    pass
+
             self._add_status(f"swarm: launching — {goal[:50]}")
-            coordinator = SwarmCoordinator(goal=goal, project=self.project)
-            coordinator.start()
+            self._swarm = SwarmCoordinator(goal=goal, project=self.project, on_log=swarm_log)
+            self._swarm.start()
             self._add_status("swarm: agents deployed")
         except Exception as e:
             self._add_status(f"swarm error: {e}")
@@ -1347,9 +1532,18 @@ class OneApp(App):
         """Launch Morgoth mode — the God Builder."""
         try:
             from .morgoth import MorgothMode
+
+            def morgoth_log(msg):
+                try:
+                    from .engine import elog
+                    elog(f"[morgoth] {msg}")
+                    self.call_from_thread(self._add_status, f"morgoth: {msg[:80]}")
+                except Exception:
+                    pass
+
             self._add_status(f"morgoth: engaging — {goal[:50]}")
-            morgoth = MorgothMode(goal=goal, project=self.project)
-            morgoth.start()
+            self._morgoth = MorgothMode(goal=goal, project=self.project, on_log=morgoth_log)
+            self._morgoth.start()
             self._add_status("morgoth: all phases initiated")
         except Exception as e:
             self._add_status(f"morgoth error: {e}")
@@ -1376,7 +1570,7 @@ class OneApp(App):
                 try:
                     engine = AuditEngine(self.project)
                     result = engine.run_full_audit(auto_fix=auto_fix)
-                    score = result.get("overall_score", "?") if isinstance(result, dict) else "done"
+                    score = result.get("health", "?") if isinstance(result, dict) else "done"
                     self.call_from_thread(self._add_status, f"audit complete: {score}")
                 except Exception as e:
                     self.call_from_thread(self._add_status, f"audit error: {e}")
@@ -1394,13 +1588,53 @@ class OneApp(App):
         """Inject context to all swarm agents."""
         self._add_status(f"inject: sent to all agents — {text[:50]}")
 
+    def _run_verify(self) -> None:
+        """Run the Zero Hallucination Engine on the entire codebase."""
+        self._add_status("verify: scanning codebase...")
+
+        def _do_verify():
+            try:
+                from .engine import verify_codebase
+                results = verify_codebase(
+                    project=self.project,
+                    on_log=lambda m: self.call_from_thread(self._add_status, f"[engine] {m}"),
+                )
+                passed = results["passed"]
+                failed = results["failed"]
+                total = passed + failed
+                self.call_from_thread(
+                    self._notify,
+                    f"engine: {passed}/{total} passed, {results['total_issues']} issues"
+                )
+            except Exception as e:
+                self.call_from_thread(self._add_status, f"verify error: {e}")
+
+        threading.Thread(target=_do_verify, daemon=True).start()
+
+    def _populate_ground(self) -> None:
+        """Populate the knowledge graph with verified ground truths."""
+        self._add_status("ground: introspecting codebase...")
+
+        def _do_ground():
+            try:
+                from .ground import populate_ground_truths
+                stats = populate_ground_truths(
+                    project=self.project,
+                    on_log=lambda m: self.call_from_thread(self._add_status, f"[ground] {m}"),
+                )
+                total = sum(stats.values())
+                self.call_from_thread(self._add_status, f"ground: {total} truths stored ({stats})")
+                self.call_from_thread(self._notify, f"ground truth: {total} facts verified")
+            except Exception as e:
+                self.call_from_thread(self._add_status, f"ground error: {e}")
+
+        threading.Thread(target=_do_ground, daemon=True).start()
+
     def _start_watch(self, directory: str) -> None:
         """Start watching a directory for file changes."""
         from .watch import start_watch
-        from .backend import get_backend
         target = directory if directory else os.getcwd()
-        backend = get_backend()
-        msg = start_watch(target, self.project, backend)
+        msg = start_watch(target, self.project, self.backend)
         self._add_status(f"watch: {msg}")
 
     def _stop_watch(self) -> None:

@@ -109,9 +109,19 @@ def extract_entities(text: str, source: str = "user") -> list[dict]:
             seen_ids.add(eid)
             entities.append({"type": etype, "name": name, "id": eid})
 
-    # File paths
+    # File paths (filter out venvs, caches, and false positives)
+    _GARBAGE_PATH_PARTS = {
+        ".venv", "site-packages", "__pycache__", "node_modules",
+        ".git", ".tox", ".eggs", ".mypy_cache", ".pytest_cache",
+    }
     for match in FILE_PATTERN.finditer(text):
         path = match.group(1).rstrip(".,;:)")
+        # Skip slash commands misidentified as paths
+        if path.startswith("/") and "/" not in path[1:] and len(path) < 20:
+            continue
+        # Skip garbage paths
+        if any(part in path for part in _GARBAGE_PATH_PARTS):
+            continue
         _add("file", path)
 
     # URLs

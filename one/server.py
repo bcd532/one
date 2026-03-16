@@ -334,8 +334,8 @@ class OneAPIHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         """Handle CORS preflight requests."""
-        self._send_cors_headers()
         self.send_response(204)
+        self._send_cors_headers()
         self.end_headers()
 
     def do_GET(self):

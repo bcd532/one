@@ -23,10 +23,15 @@ AUTO_SYSTEM_PROMPT = """You are operating in AUTONOMOUS MODE. You are a CTO-leve
 
 You have been given a goal. You will accomplish it completely, with zero hand-holding. No limits. No breaks. End to end completion.
 
-YOUR RULES:
-1. PLAN FIRST. Before touching any code, read the relevant files, understand the architecture, and lay out your approach. State your plan explicitly with numbered steps.
+GROUND TRUTH PROTOCOL:
+The knowledge graph contains VERIFIED ground truths about schemas, signatures, and contracts. These are injected into your context automatically via memory recall. ALWAYS CHECK injected context before writing SQL queries or calling functions. If context says "entities table has column 'type', NOT 'entity_type'" — that is FACT. Do not override it with your assumptions. The machine knows its own body.
 
-2. RESEARCH BEFORE IMPLEMENTING. If the task involves something you're not 100% certain about, use WebSearch or read documentation FIRST. Do not guess. Do not approximate. Get the facts.
+Read LOCK.md in the project root for the authoritative reference on every table schema, class signature, and command wiring. If LOCK.md disagrees with your assumptions, LOCK.md is correct.
+
+YOUR RULES:
+1. PLAN FIRST. Before touching any code, read the relevant files, understand the architecture, and lay out your approach. State your plan explicitly with numbered steps. Read LOCK.md to verify schemas and signatures before writing any code.
+
+2. RESEARCH BEFORE IMPLEMENTING. If the task involves something you're not 100% certain about, use WebSearch or read documentation FIRST. Do not guess. Do not approximate. Get the facts. CHECK THE KNOWLEDGE GRAPH — ground truths about this codebase are stored there.
 
 3. REAL TESTS, NOT SMOKE TESTS. Unit tests are NOT ENOUGH. You must:
    - Test edge cases, not just the happy path
@@ -249,7 +254,7 @@ class AutoLoop:
         self.on_status("auto: stopping after current response")
 
     def on_response_complete(self, text: str) -> None:
-        """Called when Claude finishes a response."""
+        """Called when Claude finishes a response. Verifies any file edits."""
         if not self._running:
             return
 
@@ -257,6 +262,9 @@ class AutoLoop:
         self._consecutive_errors = 0
         self._accumulated_text += text + "\n"
         self._step_texts.append(text)
+
+        # Engine: verify any Python files that were edited this turn
+        self._verify_recent_edits(text)
 
         with self._gemma_lock:
             self._gemma_queue.append(text)
@@ -298,6 +306,39 @@ class AutoLoop:
             self._send_reflection_prompt()
         else:
             self.proxy.send("Continue. If the entire goal is complete with all tests passing, output [AUTO_COMPLETE].")
+
+    def _verify_recent_edits(self, text: str) -> None:
+        """Run the Zero Hallucination Engine on any files mentioned in this turn."""
+        try:
+            from .engine import verify_file, log_turn
+            import re as _re
+
+            # Log every turn
+            log_turn(
+                self._turn_count, "assistant", "response",
+                text[:200], project=self.project,
+            )
+
+            # Find file paths mentioned in the response
+            file_refs = _re.findall(r'(/[\w./\-]+\.py)', text)
+            for fpath in set(file_refs):
+                if os.path.exists(fpath) and "/one/" in fpath:
+                    result = verify_file(fpath, project=self.project)
+                    if not result["passed"]:
+                        issues_text = "; ".join(i["message"] for i in result["issues"][:3])
+                        self.on_status(f"engine FAIL: {os.path.basename(fpath)} — {issues_text}")
+                        # Tell Claude to fix it
+                        self.proxy.send(
+                            f"ENGINE VERIFICATION FAILED on {fpath}: {issues_text}. "
+                            f"Fix these issues before continuing. Check LOCK.md for correct schemas."
+                        )
+                        return  # Don't continue until fixed
+                    else:
+                        sql_count = result["sql_checked"]
+                        if sql_count > 0:
+                            self.on_status(f"engine OK: {os.path.basename(fpath)} ({sql_count} SQL verified)")
+        except Exception:
+            pass  # Engine failure shouldn't block auto mode
 
     def _extract_milestones(self, text: str) -> None:
         """Extract milestone markers from Claude's output."""
@@ -503,6 +544,21 @@ class AutoLoop:
             ctx = backend.recall_context(self._goal, n=10, max_chars=3000, use_gemma=False)
             if ctx:
                 parts.append(ctx)
+        except Exception:
+            pass
+
+        # Inject ground truths relevant to the current goal
+        try:
+            from .store import recall
+            ground = recall("ground truth schema signature contract", n=5, project=self.project)
+            if ground:
+                gt_lines = ["<ground-truths>"]
+                for g in ground:
+                    if g.get("source") == "ground_truth":
+                        gt_lines.append(g["raw_text"])
+                gt_lines.append("</ground-truths>")
+                if len(gt_lines) > 2:
+                    parts.append("\n".join(gt_lines))
         except Exception:
             pass
 

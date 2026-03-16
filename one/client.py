@@ -200,10 +200,10 @@ def push_entity(
     """Push an Entity to Foundry."""
     now = datetime.now(timezone.utc).isoformat()
     client.ontology.actions.create_entity(
-        entity_id=entity_id,
         name=name,
         type=entity_type,
         first_seen=now,
         last_seen=now,
         observation_count="1",
+        hdc_vector="[]",
     )

@@ -84,11 +84,10 @@ class HealthDashboard:
 
         try:
             rows = conn.execute(
-                "SELECT entity_type, COUNT(*) as cnt FROM entities WHERE project = ? GROUP BY entity_type",
-                (self.project,),
+                "SELECT type, COUNT(*) as cnt FROM entities GROUP BY type",
             ).fetchall()
             for row in rows:
-                result[row["entity_type"]] = row["cnt"]
+                result[row["type"]] = row["cnt"]
         except sqlite3.OperationalError:
             pass
 
@@ -149,11 +148,11 @@ class HealthDashboard:
                 (self.project,),
             ),
             "rules_core": _safe_count(
-                "SELECT COUNT(*) FROM rules WHERE project = ? AND source_count >= 3",
+                "SELECT COUNT(*) FROM rule_nodes WHERE project = ? AND source_count >= 3",
                 (self.project,),
             ),
             "rules_contextual": _safe_count(
-                "SELECT COUNT(*) FROM rules WHERE project = ? AND source_count < 3",
+                "SELECT COUNT(*) FROM rule_nodes WHERE project = ? AND source_count < 3",
                 (self.project,),
             ),
         }
@@ -238,7 +237,7 @@ class HealthDashboard:
         # Stale findings (>30 days without verification)
         thirty_days_ago = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
         stale = _safe_count(
-            "SELECT COUNT(*) FROM memories WHERE project = ? AND created < ? AND aif_confidence > 0.3",
+            "SELECT COUNT(*) FROM memories WHERE project = ? AND timestamp < ? AND aif_confidence > 0.3",
             (self.project, thirty_days_ago),
         )
         if stale > 0:

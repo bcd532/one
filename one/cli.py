@@ -16,6 +16,55 @@ def main():
             setup_interactive()
         return
 
+    if len(sys.argv) > 1 and sys.argv[1] == "ground":
+        from .init import get_project_name
+        from . import store
+        project = get_project_name(os.getcwd())
+        store.set_project(project)
+        from .ground import populate_ground_truths
+        stats = populate_ground_truths(project=project, on_log=print)
+        print(f"\nDone: {sum(stats.values())} ground truths stored")
+        return
+
+    if len(sys.argv) > 1 and sys.argv[1] == "map":
+        from .init import get_project_name
+        from .engine import map_codebase, set_ontology_project
+        project = get_project_name(os.getcwd())
+        set_ontology_project(project)
+        stats = map_codebase(on_log=print)
+        print(f"\nDone: {stats['symbols']} symbols, {stats['calls']} calls, {stats['deps']} deps")
+        return
+
+    if len(sys.argv) > 1 and sys.argv[1] == "verify":
+        from .init import get_project_name
+        from .engine import verify_codebase, set_ontology_project
+        project = get_project_name(os.getcwd())
+        set_ontology_project(project)
+        results = verify_codebase(project=project, on_log=print)
+        total = results["passed"] + results["failed"]
+        print(f"\n{results['passed']}/{total} passed, {results['total_issues']} issues")
+        return
+
+    if len(sys.argv) > 1 and sys.argv[1] == "sync":
+        from .init import get_project_name
+        from . import store
+        project = get_project_name(os.getcwd())
+        store.set_project(project)
+        from .engine import map_codebase, sync_to_foundry, set_ontology_project
+        set_ontology_project(project)
+        print("Mapping codebase...")
+        map_codebase(on_log=print)
+        print("\nSyncing to Foundry...")
+        try:
+            from .client import get_client
+            client = get_client()
+            stats = sync_to_foundry(client, project=project, on_log=print)
+            print(f"\nDone: {stats['memories']} memories, {stats['entities']} entities pushed")
+        except Exception as e:
+            print(f"\nFoundry sync failed: {e}")
+            print("Local ontology is up to date. Run 'one sync' again when Foundry is available.")
+        return
+
     if len(sys.argv) > 1 and sys.argv[1] == "server":
         from .server import start_server
         port = int(sys.argv[2]) if len(sys.argv) > 2 else 4111
