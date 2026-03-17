@@ -125,6 +125,9 @@ one (TUI) --> ClaudeProxy --> claude CLI subprocess
 4. **Recall** -- cosine similarity retrieval on topic shift or periodic interval
 5. **Learn** -- repeated preferences become rules in a contextual activation tree
 
+## Pictures
+![le tui](./picture.png)
+
 ## Contributing
 
 This is early. The codebase is 37 Python files and ~17,000 lines. If you're interested in persistent memory for AI tools, knowledge graph reasoning, HDC encoding, or autonomous research systems -- contributions welcome. Start with the issues or the roadmap above.
