@@ -451,9 +451,17 @@ def _execute_research_prompt(
         )
         finding_ids.append(finding_id)
 
+        # Epistemic safety: tag provenance and cap confidence
+        from .epistemic_safety import sanitize_for_storage
+        safety = sanitize_for_storage(
+            finding_text.strip(), source="research",
+            confidence=confidence, depth=depth_level,
+        )
+        confidence = safety["confidence"]
+
         # Store as memory for future retrieval
         push_memory(
-            raw_text=finding_text.strip(),
+            raw_text=safety["text"],
             source="research",
             tm_label="research_finding",
             regime_tag="research",
@@ -588,12 +596,14 @@ def _run_adversarial_check(
         # Create a contradiction citation
         _store_citation(adv_id, finding["id"], "contradicts")
 
+        from .epistemic_safety import apply_confidence_ceiling, Provenance
+        adv_confidence = apply_confidence_ceiling(0.6, Provenance.LLM_GENERATED)
         push_memory(
-            raw_text=f"[ADVERSARIAL] {result.strip()[:500]}",
+            raw_text=f"[LLM-GENERATED ADVERSARIAL ANALYSIS] {result.strip()[:500]}",
             source="research",
             tm_label="adversarial_finding",
             regime_tag="research",
-            aif_confidence=0.6,
+            aif_confidence=adv_confidence,
             project=project,
         )
 

@@ -100,6 +100,15 @@ class AifGate:
             0.20 * excitation
         )
 
+        # Epistemic safety: detect and downweight LLM-generated content
+        # that contains false certainty signals. This prevents the system
+        # from storing overconfident LLM speculation as high-value knowledge.
+        if source in ("assistant", "research", "synthesis", "dialectic"):
+            from .epistemic_safety import score_epistemic_honesty, detect_false_certainty
+            false_cert = detect_false_certainty(text)
+            if false_cert:
+                final *= 0.6  # Penalize overconfident LLM output
+
         return min(1.0, max(0.0, final))
 
     def should_store(self, text: str, source: str = "user") -> tuple[bool, float]:

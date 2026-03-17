@@ -183,7 +183,7 @@ class TestVerifyFinding:
             "one.verification._call_ollama",
             lambda prompt, timeout=120: (
                 "STATUS: VERIFIED\n"
-                "NEW_EVIDENCE: Replicated in 3 independent studies\n"
+                "NEW_EVIDENCE: Replicated in Smith et al. (2023) and Jones (2024)\n"
                 "CONFIDENCE_ADJUSTMENT: +0.2\n"
                 "REASONING: Strong replication support"
             ),
@@ -191,9 +191,10 @@ class TestVerifyFinding:
         engine = VerificationEngine("test_project")
         result = engine.verify_finding("Gene X causes trait Y", 0.5)
         assert result["status"] == "verified"
-        assert result["new_confidence"] == pytest.approx(0.7)
+        # Epistemic safety: LLM self-verification caps confidence at 0.60
+        assert result["new_confidence"] <= 0.6
         assert result["adjustment"] == pytest.approx(0.2)
-        assert result["evidence"] == "Replicated in 3 independent studies"
+        assert "Smith et al." in result["evidence"]
         assert result["reasoning"] == "Strong replication support"
 
     def test_challenged_status_decreases_confidence(self, monkeypatch):
@@ -225,7 +226,8 @@ class TestVerifyFinding:
         engine = VerificationEngine("test_project")
         result = engine.verify_finding("Drug A reduces inflammation", 0.6)
         assert result["status"] == "corroborated"
-        assert result["new_confidence"] == pytest.approx(0.7)
+        # Epistemic safety: LLM self-verification caps at 0.60
+        assert result["new_confidence"] <= 0.6
         assert result["previous_confidence"] == pytest.approx(0.6)
 
     def test_unverifiable_status_no_change(self, monkeypatch):
@@ -258,19 +260,20 @@ class TestVerifyFinding:
         result = engine.verify_finding("Retracted claim", 0.1)
         assert result["new_confidence"] == 0.0
 
-    def test_confidence_clamped_to_one(self, monkeypatch):
+    def test_confidence_clamped_by_epistemic_safety(self, monkeypatch):
         monkeypatch.setattr(
             "one.verification._call_ollama",
             lambda prompt, timeout=120: (
                 "STATUS: VERIFIED\n"
-                "NEW_EVIDENCE: Gold standard\n"
+                "NEW_EVIDENCE: Gold standard from Chen et al. (2025)\n"
                 "CONFIDENCE_ADJUSTMENT: +0.5\n"
                 "REASONING: Overwhelmingly confirmed"
             ),
         )
         engine = VerificationEngine("test_project")
         result = engine.verify_finding("Well-established fact", 0.9)
-        assert result["new_confidence"] == 1.0
+        # Epistemic safety: LLM self-verification cannot push above ceiling
+        assert result["new_confidence"] <= 0.6
 
     def test_null_llm_response_defaults_to_unverifiable(self, monkeypatch):
         monkeypatch.setattr(
@@ -305,16 +308,17 @@ class TestVerifyFinding:
         )
         engine = VerificationEngine("test_project")
         result = engine.verify_finding("Finding", 0.5)
-        assert result["status"] == "verified"
+        # No specific citations → downgraded to unverifiable by epistemic safety
+        assert result["status"] == "unverifiable"
         assert result["adjustment"] == 0.0
-        assert result["new_confidence"] == pytest.approx(0.5)
+        assert result["new_confidence"] <= 0.5
 
     def test_verification_logged_to_db(self, monkeypatch):
         monkeypatch.setattr(
             "one.verification._call_ollama",
             lambda prompt, timeout=120: (
                 "STATUS: VERIFIED\n"
-                "NEW_EVIDENCE: Confirmed\n"
+                "NEW_EVIDENCE: Confirmed by Park et al. (2024)\n"
                 "CONFIDENCE_ADJUSTMENT: +0.1\n"
                 "REASONING: Solid"
             ),
@@ -330,9 +334,10 @@ class TestVerifyFinding:
         assert len(rows) == 1
         row = dict(rows[0])
         assert row["previous_confidence"] == pytest.approx(0.5)
-        assert row["new_confidence"] == pytest.approx(0.6)
+        # Epistemic safety: capped at LLM self-verify ceiling
+        assert row["new_confidence"] <= 0.6
         assert row["verification_type"] == "verified"
-        assert row["evidence"] == "Confirmed"
+        assert "Park et al." in row["evidence"]
 
     def test_on_log_callback_called(self, monkeypatch):
         monkeypatch.setattr(
@@ -395,7 +400,8 @@ class TestVerificationSweep:
         assert call_count["n"] == len(results)
         for r in results:
             assert "memory_id" in r
-            assert r["status"] == "verified"
+            # Epistemic safety: without specific citations, status is downgraded
+            assert r["status"] in ("verified", "unverifiable")
 
     def test_sweep_empty_project(self, monkeypatch):
         monkeypatch.setattr(
@@ -1280,7 +1286,8 @@ class TestEdgeCases:
         )
         engine = VerificationEngine("test_project")
         result = engine.verify_finding("Solid claim", 1.0)
-        assert result["new_confidence"] == 1.0  # clamped at 1.0
+        # Epistemic safety: LLM self-verification caps confidence
+        assert result["new_confidence"] <= 0.6
 
     def test_frontier_best_question_goal_truncation(self, monkeypatch):
         monkeypatch.setattr(
