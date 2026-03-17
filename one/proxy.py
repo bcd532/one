@@ -146,11 +146,12 @@ class ClaudeProxy:
         return None
 
     @staticmethod
-    def quick_ask(prompt: str, model: str = "sonnet", cwd: str = ".", timeout: int = 120) -> Optional[str]:
+    def quick_ask(prompt: str, model: str = "sonnet", cwd: str = ".", timeout: int = 900) -> Optional[str]:
         """One-shot: ask Claude a question, get the answer.
 
-        Runs from /tmp to avoid project hooks that can intercept/break
-        subprocess Claude calls.
+        Runs from /tmp with plugins disabled. Default 15min timeout —
+        research prompts can take 5-10 minutes for Claude to process.
+        --max-turns 3 prevents tool-use loops.
         """
         import subprocess as _sp
         import tempfile
@@ -159,7 +160,8 @@ class ClaudeProxy:
             "claude", "-p",
             "--model", model,
             "--output-format", "text",
-            "--system-prompt", "You are a research engine. Analyze thoroughly. Report findings as detailed bullet points. No preamble.",
+            "--max-turns", "3",
+            "--system-prompt", "You are a research engine. Answer the question directly with detailed analysis. Do NOT use tools. Do NOT read files. Answer from your training knowledge only. Report findings as bullet points.",
         ]
 
         env = dict(os.environ)
@@ -177,7 +179,9 @@ class ClaudeProxy:
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
-        except (_sp.TimeoutExpired, OSError):
+        except _sp.TimeoutExpired:
+            pass
+        except OSError:
             pass
         return None
 
