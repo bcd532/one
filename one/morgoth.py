@@ -365,29 +365,69 @@ class MorgothMode:
             self._log(f"best question: {best_q.get('question', '')[:80]}")
 
     def _phase_build(self) -> None:
-        """Phase 4: Run experiments on testable hypotheses."""
-        self._log("build phase...")
+        """Phase 4: Actually build. Claude writes real code based on research findings."""
+        self._log("build phase — writing code...")
 
-        # Get findings to test
-        from .store import get_recent
-        recent = get_recent(n=20, project=self.project)
+        from .proxy import ClaudeProxy
+        from .store import get_recent, recall
 
-        tested = 0
-        for m in recent[:10]:
-            try:
-                testability = self.experiments.is_testable(m["raw_text"])
-                if testability.get("testable"):
-                    self._log(f"testing: {m['raw_text'][:60]}")
-                    self.experiments.run_full_experiment(m["raw_text"])
-                    tested += 1
-            except Exception:
-                pass
+        # Get high-confidence findings to build from
+        recent = get_recent(n=50, project=self.project)
+        high_conf = [m for m in recent if m.get("aif_confidence", 0) > 0.6]
+        self._log(f"building from {len(high_conf)} high-confidence findings")
 
-        self._log(f"tested {tested} hypotheses")
+        if not high_conf:
+            self._log("no high-confidence findings yet — skipping build")
+            return
 
-        if self.proxy_factory:
-            self._launch_wave(WAVE_3)
-            self._wait_for_findings(min_findings=3, timeout=120)
+        # Summarize what we know
+        findings_summary = "\n".join(
+            f"- {m['raw_text'][:200]}" for m in high_conf[:20]
+        )
+
+        # Ask Claude to generate an implementation plan and code
+        build_prompt = f"""You are building production code. Here is the goal:
+
+{self.goal}
+
+Here is what research has established (verified findings):
+
+{findings_summary}
+
+Based on these findings, write the ACTUAL CODE that implements the next step toward this goal.
+Be specific. Write real Python files with real implementations.
+If multiple files need changing, prioritize the most impactful one.
+Output the complete file content.
+State which file to write to and why."""
+
+        self._log("asking Claude to build...")
+        result = ClaudeProxy.quick_ask(build_prompt, model="sonnet", timeout=900)
+
+        if result:
+            self._log(f"Claude produced {len(result)} chars of code/plan")
+
+            # Store the build output as a high-confidence memory
+            push_memory(
+                f"[BUILD OUTPUT] {result[:3000]}",
+                source="morgoth",
+                tm_label="build_output",
+                project=self.project,
+                aif_confidence=0.85,
+            )
+
+            # If Claude produced file content, store it for the user to review
+            if "```python" in result or "```" in result:
+                build_dir = os.path.expanduser(f"~/.one/builds/{self.project}")
+                os.makedirs(build_dir, exist_ok=True)
+                build_file = os.path.join(build_dir, f"build_{self.iteration}.md")
+                with open(build_file, "w") as f:
+                    f.write(f"# Morgoth Build — Iteration {self.iteration}\n\n")
+                    f.write(f"## Goal\n{self.goal}\n\n")
+                    f.write(f"## Findings Used\n{len(high_conf)} high-confidence findings\n\n")
+                    f.write(f"## Claude's Output\n\n{result}\n")
+                self._log(f"build saved to {build_file}")
+        else:
+            self._log("Claude returned no build output")
 
     def _phase_verify(self) -> None:
         """Phase 5: Full adversarial review."""
