@@ -126,7 +126,7 @@ one (TUI) --> ClaudeProxy --> claude CLI subprocess
 5. **Learn** -- repeated preferences become rules in a contextual activation tree
 
 ## Pictures
-![le tui](./picture.png)
+![le tui](./image.png)
 
 ## Contributing
 
