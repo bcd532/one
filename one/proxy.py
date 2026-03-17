@@ -147,8 +147,13 @@ class ClaudeProxy:
 
     @staticmethod
     def quick_ask(prompt: str, model: str = "sonnet", cwd: str = ".", timeout: int = 120) -> Optional[str]:
-        """One-shot: ask Claude a question, get the answer. Simple subprocess call."""
+        """One-shot: ask Claude a question, get the answer.
+
+        Runs from /tmp to avoid project hooks that can intercept/break
+        subprocess Claude calls.
+        """
         import subprocess as _sp
+        import tempfile
 
         cmd = [
             "claude", "-p",
@@ -157,6 +162,9 @@ class ClaudeProxy:
             "--system-prompt", "You are a research engine. Analyze thoroughly. Report findings as detailed bullet points. No preamble.",
         ]
 
+        env = dict(os.environ)
+        env["CLAUDE_CODE_DISABLE_PLUGINS"] = "1"
+
         try:
             result = _sp.run(
                 cmd,
@@ -164,7 +172,8 @@ class ClaudeProxy:
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                cwd=cwd,
+                cwd=tempfile.gettempdir(),
+                env=env,
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
