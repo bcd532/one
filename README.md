@@ -1,67 +1,54 @@
 # one
 
-Persistent memory and autonomous research platform for Claude Code. 37 Python files, ~17,000 lines. MIT licensed.
+A knowledge graph orchestrator for Claude Code. Persistent memory, autonomous research, cross-domain reasoning, and verification -- building toward a world where AI coding tools don't forget, don't regress, and don't hallucinate.
 
-> **Alpha software.** Core memory and recall works. Autonomous features (`/auto`, `/morgoth`) are experimental -- they produce real results mixed with confident-sounding noise. I'm being upfront about what's real and what's aspirational.
+> **Alpha.** Core memory works. Autonomous features are experimental. Active development.
 
-## Why I built this
+## The Vision
 
-I use Claude Code daily for everything -- a trading bot, a C99 TUI engine, patent research. The problem: every session starts from zero. Claude doesn't remember what we decided yesterday, what broke last week, or what patterns I prefer. I wanted persistent memory that actually works -- not a CLAUDE.md file I have to maintain by hand, but a system that learns, recalls, and eventually reasons across everything I've ever worked on.
+Every Claude session starts from zero. It doesn't remember what you built yesterday. It doesn't know what broke last week. It doesn't learn your patterns. And when it writes code, it hallucinates function names, wrong column names, broken signatures -- because it has no grounded truth about your codebase.
 
-It started as a memory layer. Then I added entity extraction. Then rules. Then I let the system argue with itself about what it knows. That's when it got interesting.
+`one` is building the home Claude lives in. A knowledge graph it traverses to find answers. A memory it recalls to avoid past mistakes. A verification engine that catches errors before they land. A research system that discovers connections across everything you've ever worked on.
 
-## What it does
+The dream: no hallucinations. No forgetting. Research, proof, validation, shipped. An LLM that stops regressing to its training distribution and starts building on verified, project-specific truth.
 
-**Core (stable):**
-- **Persistent memory** -- conversations, decisions, and context stored in SQLite with 4096-dim HDC vector embeddings, recalled by cosine similarity when relevant
-- **Rule learning** -- repeated preferences detected, organized into a contextual tree, injected per-turn based on what I'm working on
-- **Entity extraction** -- files, concepts, tools, code patterns, URLs extracted and linked into a knowledge graph
-- **Session tracking** -- full history with cost and messages, exportable
-- **Foundry sync** -- optionally push the knowledge graph to Palantir AIP as ontology objects
+## What works today
 
-**Autonomous research (experimental):**
-- **Morgoth mode** (`/morgoth`) -- autonomous research loop: understand, research, dialectic challenge, synthesize, build, verify, iterate. Uses Claude as the reasoning engine. Runs indefinitely.
-- **Auto mode** (`/auto`) -- give Claude a goal, it plans/executes/tests/iterates unattended
-- **Dialectic engine** -- thesis/antithesis/synthesis chains that challenge findings adversarially
-- **Contradiction mining** -- finds conflicting claims in the knowledge graph and resolves them
-- **Cross-domain synthesis** -- discovers structural patterns across unrelated domains
+**Persistent memory** -- conversations, decisions, and context stored in SQLite with 4096-dimensional Hyperdimensional Computing (HDC) vector embeddings. Recalled automatically by cosine similarity when the topic shifts or periodically during conversation.
 
-**Zero Hallucination Engine (new):**
-- AST-parses Python edits, extracts every SQL query, checks column names against live `PRAGMA table_info`
-- Multi-language: Python, C, JS, HTML, CSS, JSON
-- Codebase ontology: maps every function (483), every call (4,300+), every file dependency (122)
-- Impact analysis: if I rename a function, it tells me which files break
-- Post-edit hooks block bad code before it saves
+**Knowledge graph** -- entities (files, concepts, tools, code patterns, people, orgs) extracted from every conversation and linked to memories. The graph grows with every session.
+
+**Rule learning** -- repeated preferences detected across sessions, organized into a contextual activation tree, injected per-turn based on what you're currently working on. The system learns how you want to work.
+
+**Autonomous research** -- `/morgoth` runs an indefinite loop: research a topic with Claude, challenge every finding through dialectic (thesis/antithesis/synthesis), mine for contradictions, synthesize cross-domain patterns, build code from verified findings, verify with the engine, prune weak claims, iterate. Each cycle strengthens the knowledge graph.
+
+**Zero Hallucination Engine** -- AST-parses every code edit, extracts SQL queries, checks column and table names against live database schemas. Maps every function, call, and file dependency in the codebase. Detects when edits break callers in other files. Blocks bad code before it saves.
+
+**Foundry sync** -- push the entire knowledge graph to Palantir AIP as ontology objects for enterprise-scale visualization and querying.
 
 ## What happened when I let it run
 
-I pointed `/morgoth` at my trading bot codebase with the goal "research compound trading strategies for Kalshi binary options." I let it run for ~16 hours across 6 iterations. Here's what it actually did:
+I pointed `/morgoth` at a trading system codebase. Over 6 iterations (~16 hours), it autonomously:
 
-- Produced **420 research findings** citing real academic sources (Lopez de Prado 2018, Bailey et al. 2015, Vince 1992)
-- Mined **472 contradictions** between findings, resolved 14 with structured reasoning
-- **Deprecated 589 weak findings** through adversarial dialectic challenge
-- Discovered **21 universal structural patterns** across domains I never directed it to explore
+- Produced **420 research findings** with cited academic sources
+- Mined **472 contradictions**, resolved 14 with structured reasoning
+- Deprecated **589 weak findings** through adversarial challenge
+- Discovered **21 universal structural patterns** across domains
 - Generated **27 cross-domain syntheses** connecting software engineering, molecular biology, quantitative finance, and AI security
 
-### What it found
+The system connected Python's lazy import pattern to RNA transcription -- both are deferred materialization architectures where dormant capabilities are suppressed until activation context arrives. It formalized why certain bug classes are invisible to quality checks (manifold membership). It coined "trust laundering" for when unverified data passes through enough processing layers to appear verified.
 
-**TRUST_LAUNDERING** -- the system described a universal pattern where adversarial content from a low-trust channel gets misrouted so the receiving system treats it as high-trust. I realized this is exactly the "ghost fill" problem in my trading bot: a fill that didn't happen gets counted as a real win and feeds into calibration. The fake data launders its provenance through the system.
+These connections emerged from the system arguing with itself, not from directed prompts. The dialectic engine challenges every finding, the contradiction miner finds conflicts, and weak claims get pruned. What survives multiple iterations of adversarial challenge is harder knowledge.
 
-**SIGNAL_HOMOGRAPHY** -- identical signals carry opposite meanings depending on interpretive frame. This is the multi-timeframe trading problem: the same price at $95,000 means "bullish breakout" on the 15-minute chart and "resistance rejection" on the daily. Same signal, opposite meaning, depending which frame you read it in.
+## Roadmap
 
-**Deferred materialization (Foundry x RNA)** -- the system connected Python's lazy import pattern to RNA transcription. Both are the same architecture: a dormant capability catalogue (SDK modules / DNA) preserved structurally but suppressed until a local invocation context is entered (function body / transcription signal). The purpose in both cases is surviving when the activating infrastructure isn't present.
+**Active Inference (AIF)** -- the current gating function is inspired by AIF but isn't a real implementation. I'm working toward actual free energy minimization with a generative model, so the system can compute genuine surprise relative to its beliefs and update those beliefs from evidence. The field names in the codebase (`aif_confidence`, `regime_tag`) are the scaffolding for this.
 
-**Manifold membership** -- a bug where `recall("")` returned empty results (zero vector, undefined cosine similarity) led to a meta-hypothesis: "quality metrics presuppose manifold membership and cannot distinguish low-quality content from structurally undefined state." A zero-vector query doesn't return bad results -- it's outside the space where results exist. The system formalized why certain classes of bugs are invisible to quality checks.
+**Tsetlin Machines (TM)** -- the `tm_label` field is currently a string tag. The goal is real Tsetlin Machine classification for memory categorization -- interpretable Boolean logic that can explain WHY a memory was categorized a certain way, not just that it was.
 
-### Honest caveats
+**Epistemic safety** -- LLM confidence scoring is circular (the LLM scores its own output). Working on provenance tracking, confidence ceilings, and circular reference detection so the knowledge graph can distinguish between empirically grounded claims and LLM speculation.
 
-I want to be upfront about what's real and what's not:
-
-- The "Active Inference gate" is a **weighted scoring function inspired by AIF**, not real free energy minimization. There's no generative model or belief updating. The field names (`aif_confidence`, `regime_tag`) reflect where I want to take this, not where it is today.
-- The `tm_label` field references Tsetlin Machines but **there is no TM implementation**. It's a string tag. I have a provisional patent on combining HDC + TM + AIF but the TM and AIF parts aren't built yet.
-- Confidence scores on LLM syntheses **inflate** because the confidence scorer is also an LLM -- it can't catch its own hallucinations. There's an [open PR](https://github.com/bcd532/one/pull/1) adding epistemic safety guards.
-- The universal patterns (TRUST_LAUNDERING, SIGNAL_HOMOGRAPHY, etc.) are conceptual connections generated by Claude. Some map to real phenomena. Some might be creative naming of things practitioners already intuit. I haven't validated them against published literature.
-- Morgoth is **token-intensive**. A 16-hour run uses significant API credits.
+**Foundry link integration** -- objects push to Foundry, but entity-to-memory links need action type configuration. Working on making the full ontology graph navigable in Vertex.
 
 ## Install
 
@@ -71,7 +58,7 @@ cd one
 pip install -e .
 ```
 
-Requires Python 3.10+ and [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) installed and authenticated.
+Requires Python 3.10+ and [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli).
 
 ## Usage
 
@@ -92,82 +79,55 @@ one -d /path/to/project    # set working directory
 | `/stats` | Memory store statistics |
 | `/entities` | Show knowledge graph |
 | `/search <q>` | Search memories |
-| `/sessions` | List past sessions |
-| `/auto <goal>` | Autonomous agent loop |
+| `/auto <goal>` | Autonomous agent -- Claude drives until done |
 | `/morgoth <goal>` | Research + build + verify loop |
 | `/research <topic>` | Deep research with gap analysis |
 | `/synthesize` | Cross-domain insight generation |
 | `/verify` | Run Zero Hallucination Engine |
-| `/health` | Knowledge graph health |
+| `/health` | Knowledge graph health metrics |
 | `/audit` | Quality audit |
 
-### CLI tools
+### CLI
 
 ```bash
-one map       # map codebase: symbols, calls, deps
+one map       # map codebase: functions, calls, deps
 one verify    # verify all files against live schemas
-one ground    # populate ground truths from introspection
-one sync      # push everything to Palantir Foundry
+one ground    # populate verified ground truths
+one sync      # push knowledge graph to Foundry
 one server    # REST API on :4111
+```
+
+## Architecture
+
+```
+one (TUI) --> ClaudeProxy --> claude CLI subprocess
+    |
+    +--> Knowledge Engines
+    |      research, dialectic, synthesis
+    |      contradictions, analogy, verification
+    |      experiments, morgoth, swarm
+    |
+    +--> Zero Hallucination Engine
+    |      AST parsing, SQL verification
+    |      codebase ontology, impact analysis
+    |
+    +--> Storage
+           SQLite (local, always works)
+           Palantir Foundry (optional, enterprise)
+           HDC encoder (4096-dim vectors)
 ```
 
 ## How memory works
 
-1. **Encode** -- message encoded into 4096-dim hypervector (HDC: character trigrams + word vectors + bigrams)
-2. **Gate** -- scoring function evaluates novelty, content quality, information type. Noise dropped.
-3. **Store** -- qualifying messages stored with HDC vector and metadata in SQLite
-4. **Recall** -- on topic shifts or periodic intervals, relevant memories retrieved by cosine similarity and injected into Claude's context
-5. **Learn** -- repeated preferences promoted to rules in a contextual tree
+1. **Encode** -- HDC algebra: character trigrams + word vectors + bigrams into 4096-dim hypervector
+2. **Gate** -- score for novelty, content quality, information type. Drop noise.
+3. **Store** -- SQLite with vector, metadata, regime tag
+4. **Recall** -- cosine similarity retrieval on topic shift or periodic interval
+5. **Learn** -- repeated preferences become rules in a contextual activation tree
 
-## How morgoth works
+## Contributing
 
-```
-UNDERSTAND --> RESEARCH --> SYNTHESIZE --> BUILD --> VERIFY --> ITERATE
-                  |             |            |         |          |
-           Claude researches   Cross-domain  Claude    Engine     Weak
-           stores findings     pattern       writes    verifies   findings
-           with confidence     discovery     code      against    pruned,
-           scores                            from      schemas    strong
-                  |             |            findings             reinforced
-           Dialectic runs      Contradictions
-           thesis/antithesis   mined and
-           /synthesis          resolved
-```
-
-Each iteration self-prunes. The system argues with itself until only adversarially-tested knowledge remains.
-
-## Optional: Foundry backend
-
-```bash
-mkdir -p ~/.one
-echo "host=your-foundry-hostname" > ~/.one/config
-echo "your-token" > ~/.one/token
-one sync
-```
-
-## Optional: Gemma for condensation
-
-```bash
-ollama pull gemma3:4b
-```
-
-Used only for compressing recalled memories before injection. Claude is the primary reasoning engine for all research, dialectic, and synthesis operations.
-
-## Status
-
-| Feature | Status |
-|---------|--------|
-| Memory / recall | Stable |
-| Entity graph | Stable |
-| Rule learning | Stable |
-| Sessions | Stable |
-| Zero Hallucination Engine | Working, new |
-| Foundry sync (objects) | Working |
-| Foundry sync (links) | Needs config |
-| `/auto` | Experimental |
-| `/morgoth` | Experimental, token-intensive |
-| Dialectic / synthesis | Working, confidence inflation issue |
-| Epistemic safety | [PR #1](https://github.com/bcd532/one/pull/1) |
+This is early. The codebase is 37 Python files and ~17,000 lines. If you're interested in persistent memory for AI tools, knowledge graph reasoning, HDC encoding, or autonomous research systems -- contributions welcome. Start with the issues or the roadmap above.
 
 ## License
 
