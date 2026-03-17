@@ -16,7 +16,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Optional
 
-from .store import _get_conn as _store_conn, push_memory, DB_DIR, DB_PATH
+from .store import _get_conn as _store_conn, push_memory, recall, DB_DIR, DB_PATH
 
 
 _local = threading.local()
@@ -510,9 +510,20 @@ def run_synthesis(
         conn.commit()
         synthesis_id = cur.lastrowid
 
+        # Epistemic safety: cap confidence and tag provenance
+        from .epistemic_safety import sanitize_for_storage
+        existing = recall(hypothesis[:200], n=5, project=project)
+        safety = sanitize_for_storage(
+            hypothesis, source="synthesis",
+            confidence=confidence, existing_memories=existing, depth=0,
+        )
+        confidence = safety["confidence"]
+        if safety["blocked"]:
+            continue  # Circular reference — skip this synthesis
+
         # Store as a memory for retrieval and context injection
         push_memory(
-            raw_text=hypothesis,
+            raw_text=safety["text"],
             source="synthesis",
             tm_label="hypothesis",
             regime_tag="synthesis",
@@ -598,8 +609,20 @@ def run_deep_synthesis(
         conn.commit()
         synthesis_id = cur.lastrowid
 
+        # Epistemic safety: deep synthesis gets progressively stricter ceilings
+        from .epistemic_safety import sanitize_for_storage
+        existing = recall(meta_hypothesis[:200], n=5, project=project)
+        safety = sanitize_for_storage(
+            meta_hypothesis, source="synthesis",
+            confidence=confidence, existing_memories=existing,
+            depth=current_depth,
+        )
+        confidence = safety["confidence"]
+        if safety["blocked"]:
+            break  # Circular — stop deepening
+
         push_memory(
-            raw_text=meta_hypothesis,
+            raw_text=safety["text"],
             source="synthesis",
             tm_label=f"hypothesis:depth_{current_depth}",
             regime_tag="synthesis",

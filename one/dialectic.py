@@ -211,19 +211,35 @@ class DialecticEngine:
         conn.commit()
         antithesis_id = cur.lastrowid or 0
 
-        # Store both as memories
+        # Epistemic safety: tag provenance and detect circular references
+        from .epistemic_safety import sanitize_for_storage
+        existing = recall(finding[:200], n=5, project=self.project)
+
+        thesis_safety = sanitize_for_storage(
+            finding, source=source or "dialectic",
+            confidence=0.5, existing_memories=existing,
+        )
+        anti_safety = sanitize_for_storage(
+            antithesis_text, source="dialectic",
+            confidence=0.5, existing_memories=existing,
+        )
+
+        # Store both as memories with provenance tags
         push_memory(
-            f"[DIALECTIC THESIS] {finding}",
+            f"[DIALECTIC THESIS] {thesis_safety['text']}",
             source="dialectic",
             tm_label="dialectic_thesis",
             project=self.project,
+            aif_confidence=thesis_safety["confidence"],
         )
-        push_memory(
-            f"[DIALECTIC ANTITHESIS] {antithesis_text}",
-            source="dialectic",
-            tm_label="dialectic_antithesis",
-            project=self.project,
-        )
+        if not anti_safety["blocked"]:
+            push_memory(
+                f"[DIALECTIC ANTITHESIS] {anti_safety['text']}",
+                source="dialectic",
+                tm_label="dialectic_antithesis",
+                project=self.project,
+                aif_confidence=anti_safety["confidence"],
+            )
 
         self._log(f"antithesis generated for chain {chain_id}")
 
@@ -261,11 +277,16 @@ class DialecticEngine:
             )
             conn.commit()
 
+        from .epistemic_safety import sanitize_for_storage
+        synth_safety = sanitize_for_storage(
+            synthesis_text, source="dialectic", confidence=0.6, depth=1,
+        )
         push_memory(
-            f"[DIALECTIC SYNTHESIS] {synthesis_text}",
+            f"[DIALECTIC SYNTHESIS] {synth_safety['text']}",
             source="dialectic",
             tm_label="dialectic_synthesis",
             project=self.project,
+            aif_confidence=synth_safety["confidence"],
         )
 
         self._log(f"synthesis complete for chain {chain_id}")
@@ -328,11 +349,14 @@ class DialecticEngine:
             )
             conn.commit()
 
+        from .epistemic_safety import apply_confidence_ceiling, Provenance
+        capped_confidence = apply_confidence_ceiling(confidence, Provenance.LLM_GENERATED)
         push_memory(
-            f"[DIALECTIC VERIFICATION] {verdict}: {reasoning}",
+            f"[LLM-GENERATED DIALECTIC VERIFICATION] {verdict}: {reasoning}",
             source="dialectic",
             tm_label="dialectic_verification",
             project=self.project,
+            aif_confidence=capped_confidence,
         )
 
         self._log(f"verification: {verdict} (conf: {confidence})")
@@ -391,14 +415,20 @@ class DialecticEngine:
             )
             conn.commit()
 
-        # Store as high-value memory
+        # Store as memory — but with strict epistemic safety.
+        # "Universal patterns" from LLM meta-synthesis are speculation, not discovery.
         if pattern_name:
+            from .epistemic_safety import sanitize_for_storage
+            meta_safety = sanitize_for_storage(
+                f"{pattern_name}: {pattern}",
+                source="dialectic", confidence=confidence, depth=2,
+            )
             push_memory(
-                f"[UNIVERSAL PATTERN] {pattern_name}: {pattern}",
+                f"[LLM-SPECULATED PATTERN — NOT EMPIRICALLY VERIFIED] {meta_safety['text']}",
                 source="dialectic",
-                tm_label="universal_pattern",
+                tm_label="speculated_pattern",
                 project=self.project,
-                aif_confidence=confidence,
+                aif_confidence=meta_safety["confidence"],
             )
 
         self._log(f"meta-synthesis: {pattern_name} (conf: {confidence})")

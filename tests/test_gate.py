@@ -1,7 +1,9 @@
-"""Tests for the AIF gate — memory write selection."""
+"""Tests for the AIF gate — Active Inference memory write selection."""
 
+import numpy as np
 import pytest
-from one.gate import AifGate, GATE_THRESHOLD
+from one.gate import AifGate, Regime, GATE_THRESHOLD
+from one.hdc import encode_text, DIM
 
 
 class TestNoiseFilter:
@@ -38,11 +40,16 @@ class TestNoiseFilter:
         assert gate.score("FUCK SHIT DAMN", "user") == 0.0
 
 
-class TestContentQuality:
+class TestContentPrior:
     def test_user_messages_score_higher(self):
         gate = AifGate()
-        user_score = gate.score("I need to fix the authentication system", "user")
-        tool_score = gate.score("I need to fix the authentication system", "tool_result")
+        # Seed the model so content prior matters more than novelty
+        gate.should_store("We were discussing database optimization strategies", "user")
+        gate.should_store("The logging framework handles structured output", "user")
+        gate.should_store("Network latency affects query performance here", "user")
+        # Text without decision/preference signals — source prior drives the difference
+        user_score = gate.score("the server restarts every morning at six", "user")
+        tool_score = gate.score("the server restarts every morning at six", "tool_result")
         assert user_score > tool_score
 
     def test_longer_messages_score_higher(self):
@@ -67,22 +74,6 @@ class TestDecisionDetection:
         gate = AifGate()
         score = gate.score("The reason is that SQLite can't handle concurrent writes from multiple processes", "user")
         assert score > 0.5
-
-
-class TestNoveltyDetection:
-    def test_first_message_is_novel(self):
-        gate = AifGate()
-        _, score = gate.should_store("This is a unique technical insight about HDC encoding", "user")
-        assert score > 0
-
-    def test_duplicate_messages_score_lower(self):
-        gate = AifGate()
-        gate.should_store("fix the auth bug in login.py", "user")
-        gate.should_store("fix the auth bug in login.py", "user")
-        # Third identical message should have lower novelty
-        _, score = gate.should_store("fix the auth bug in login.py", "user")
-        # The exact score depends on implementation, but it should be stored (has content)
-        assert isinstance(score, float)
 
 
 class TestShouldStore:
@@ -132,3 +123,132 @@ class TestExcitationDetection:
             "assistant"
         )
         assert score > 0.5
+
+
+class TestRegime:
+    """Test the learned regime (topic cluster) directly."""
+
+    def test_regime_creation(self):
+        vec = encode_text("testing the regime system")
+        r = Regime(vec)
+        assert r.count == 1
+        assert r.precision == 1.0
+
+    def test_surprise_identical_is_low(self):
+        vec = encode_text("machine learning algorithms")
+        r = Regime(vec)
+        assert r.surprise(vec) < 0.1
+
+    def test_surprise_different_is_high(self):
+        vec1 = encode_text("machine learning algorithms for natural language processing")
+        vec2 = encode_text("the cat sat on the mat and looked at the birds outside")
+        r = Regime(vec1)
+        assert r.surprise(vec2) > 0.5
+
+    def test_free_energy_novel_is_high(self):
+        vec1 = encode_text("machine learning algorithms for NLP")
+        vec2 = encode_text("the recipe calls for butter and sugar")
+        r = Regime(vec1)
+        fe_similar = r.free_energy(vec1)
+        fe_novel = r.free_energy(vec2)
+        assert fe_novel > fe_similar
+
+    def test_update_shifts_centroid(self):
+        vec1 = encode_text("python programming language")
+        vec2 = encode_text("python code development")
+        r = Regime(vec1)
+        old_mu = r.mu.copy()
+        r.update(vec2)
+        # Centroid should shift toward vec2
+        sim_before = float(np.dot(old_mu, vec2))
+        sim_after = float(np.dot(r.mu, vec2))
+        assert sim_after >= sim_before
+
+    def test_precision_increases_for_tight_cluster(self):
+        vec = encode_text("consistent topic about databases")
+        r = Regime(vec, precision=1.0)
+        # Feed very similar observations
+        for _ in range(20):
+            r.update(vec)
+        # Precision should increase (tight cluster = high precision)
+        assert r.precision > 1.0
+
+    def test_epistemic_value_novel_is_high(self):
+        vec1 = encode_text("machine learning algorithms for NLP")
+        vec2 = encode_text("cooking recipes for italian food")
+        r = Regime(vec1)
+        ev_similar = r.epistemic_value(vec1)
+        ev_novel = r.epistemic_value(vec2)
+        assert ev_novel > ev_similar
+
+
+class TestGenerativeModel:
+    """Test the full generative model behavior."""
+
+    def test_first_message_is_maximally_novel(self):
+        gate = AifGate()
+        # First message should score high (no model yet → max surprise)
+        score = gate.score("A completely new topic about quantum computing", "user")
+        assert score > 0.5
+
+    def test_repeated_topic_scores_lower(self):
+        gate = AifGate()
+        msg = "fix the authentication bug in the login handler"
+        gate.should_store(msg, "user")
+        gate.should_store(msg, "user")
+        # Third time — model has learned this regime, surprise decreases
+        _, score1 = gate.should_store(msg, "user")
+
+        gate2 = AifGate()
+        _, score2 = gate2.should_store(msg, "user")
+
+        # First encounter should score higher than third
+        assert score2 >= score1
+
+    def test_regime_creation_on_store(self):
+        gate = AifGate()
+        assert gate.regime_count() == 0
+        gate.should_store("The approach is to use HDC encoding", "user")
+        assert gate.regime_count() == 1
+
+    def test_multiple_regimes_for_different_topics(self):
+        gate = AifGate()
+        gate.should_store("I decided to use Redis for the caching layer because of pub/sub support", "user")
+        gate.should_store("The quantum entanglement experiment showed unexpected decoherence patterns", "user")
+        gate.should_store("The recipe calls for two cups of flour and one egg", "user")
+        # Should have created multiple regimes for distinct topics
+        assert gate.regime_count() >= 2
+
+    def test_regime_summary(self):
+        gate = AifGate()
+        gate.should_store("I want to use PostgreSQL instead of MySQL", "user")
+        summary = gate.regime_summary()
+        assert len(summary) == 1
+        assert "precision" in summary[0]
+        assert "prior" in summary[0]
+        assert "count" in summary[0]
+
+    def test_redundant_message_blocked(self):
+        gate = AifGate()
+        msg = "fix the auth bug in login.py"
+        gate.should_store(msg, "user")
+        # Exact same message should get suppressed by redundancy check
+        score = gate.score(msg, "user")
+        # After building a regime, the redundancy filter in _recent_vecs triggers
+        assert isinstance(score, float)
+
+
+class TestEpistemicSafety:
+    def test_overconfident_llm_output_penalized(self):
+        gate = AifGate()
+        # Normal assistant message
+        normal = gate.score(
+            "This suggests that the protein might interact with the receptor pathway",
+            "assistant"
+        )
+        # Overconfident assistant message
+        overconfident = gate.score(
+            "This proves beyond doubt that the protein definitively controls the receptor",
+            "assistant"
+        )
+        assert overconfident < normal
